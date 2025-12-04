@@ -22,7 +22,7 @@ from yana.session import SessionManager, Event
 # 代替パス（環境によって変わる場合）
 MODEL_PATH = LLM_MODEL_PATH
 if not MODEL_PATH.exists():
-    MODEL_PATH = Path.home() / "projects/jetracer-agent/models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    MODEL_PATH = Path.home() / "projects/jetracer-agent/models/qwen2.5-3b-instruct-q4_k_m.gguf"
 
 MCP_PATH = MCP_SERVER_PATH
 if not MCP_PATH.exists():
@@ -57,6 +57,7 @@ class YANAAgent:
             n_gpu_layers=-1,
             n_ctx=LLM_N_CTX,
             verbose=False,
+            chat_format="chatml",
         )
         print("LLM loaded.")
 

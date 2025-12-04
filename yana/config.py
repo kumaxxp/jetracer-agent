@@ -7,7 +7,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 
 # モデルパス
 MODEL_DIR = Path.home() / "models"
-LLM_MODEL_PATH = MODEL_DIR / "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+LLM_MODEL_PATH = MODEL_DIR / "qwen2.5-3b-instruct-q4_k_m.gguf"
 SEGMENTATION_MODEL_PATH = PROJECT_ROOT / "models" / "road_segmentation.onnx"
 YOLO_MODEL_PATH = PROJECT_ROOT / "models" / "yolov8n.pt"
 
