@@ -1,0 +1,23 @@
+# LLM設定
+llm:
+  # 使用モデル
+  model: "gemma3:4b"
+
+  # Ollama URL
+  ollama_url: "http://localhost:11434/api/generate"
+
+  # ツール呼び出しアプローチ
+  # react, json, twostage, hybrid から選択
+  approach: "hybrid"
+
+  # 生成パラメータ
+  temperature: 0.1
+  max_tokens: 300
+
+  # メモリ最適化（Jetson用）
+  context_length: 2048  # 128Kではなく2Kに制限
+
+# 代替設定（Gemma 3が動作しない場合）
+fallback:
+  model: "qwen2.5:3b"
+  approach: "hybrid"
