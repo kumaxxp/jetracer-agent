@@ -2,7 +2,7 @@
 
 import asyncio
 from pathlib import Path
-from nicegui import ui
+from nicegui import ui, context
 
 from yana.session import SessionManager, Event
 from agent.agent import YANAAgent
@@ -10,7 +10,7 @@ from agent.agent import YANAAgent
 
 class YANAChatPanel:
     """YANAチャットパネル"""
-    
+
     def __init__(self, session_manager: SessionManager):
         self.session = session_manager
         self.agent: YANAAgent = None
@@ -18,6 +18,17 @@ class YANAChatPanel:
         self.chat_log = None
         self.input_field = None
         self.is_processing = False
+        self._client = None  # クライアント参照を保持
+
+    def _is_client_valid(self) -> bool:
+        """クライアントがまだ有効かチェック"""
+        try:
+            if self._client is None:
+                return False
+            # クライアントが削除されていないかチェック
+            return self._client.id in context.client.instances
+        except Exception:
+            return False
     
     def setup(self):
         """UIセットアップ"""

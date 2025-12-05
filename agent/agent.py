@@ -111,18 +111,132 @@ class YANAAgent:
         return result.content[0].text
 
     async def startup(self) -> AsyncGenerator[str, None]:
-        """起動シーケンスを実行"""
-        # 前回のセッション確認
-        if self.session_manager.is_resumable():
-            context = self.session_manager.get_context_for_yana()
-            recent_events = self.session_manager.get_recent_events(5)
-            startup_prompt = build_startup_prompt(context, recent_events)
+        """起動シーケンスを実行（ハードコード版）"""
+
+        # 1. セルフチェックをコードで実行
+        check_results = await self._run_startup_checks()
+
+        # 2. 結果をLLMに渡してコメント生成
+        comment_prompt = self._build_comment_prompt(check_results)
+
+        # 3. LLMの応答を返す
+        self.messages.append({"role": "user", "content": comment_prompt})
+
+        response = self.llm.create_chat_completion(
+            messages=self.messages,
+            max_tokens=512,
+        )
+
+        content = response["choices"][0]["message"].get("content", "")
+        self.messages.append({"role": "assistant", "content": content})
+
+        yield content
+
+    async def _run_startup_checks(self) -> dict:
+        """起動時のセルフチェックを実行"""
+        results = {
+            "camera": None,
+            "frame_analysis": None,
+            "objects": None,
+            "models": None,
+            "resources": None,
+        }
+
+        # カメラチェック
+        try:
+            camera_result = await self._execute_tool("check_camera", {})
+            results["camera"] = json.loads(camera_result)
+
+            # カメラOKなら画像分析
+            if results["camera"].get("connected"):
+                frame_path = results["camera"].get("frame_path")
+                if frame_path:
+                    # 明るさ分析
+                    analysis = await self._execute_tool("analyze_frame", {"image_path": frame_path})
+                    results["frame_analysis"] = json.loads(analysis)
+
+                    # 物体検出
+                    objects = await self._execute_tool("detect_objects", {"image_path": frame_path})
+                    results["objects"] = json.loads(objects)
+        except Exception as e:
+            results["camera"] = {"connected": False, "error": str(e)}
+
+        # モデルファイルチェック
+        try:
+            models = await self._execute_tool("check_model_files", {})
+            results["models"] = json.loads(models)
+        except Exception as e:
+            results["models"] = {"error": str(e)}
+
+        # リソースチェック
+        try:
+            resources = await self._execute_tool("check_system_resources", {})
+            results["resources"] = json.loads(resources)
+        except Exception as e:
+            results["resources"] = {"error": str(e)}
+
+        return results
+
+    def _build_comment_prompt(self, results: dict) -> str:
+        """チェック結果からコメント生成用プロンプトを作成"""
+        prompt = """あなたはYANA、JetRacerのアシスタントです。
+システム起動時のセルフチェック結果を報告してください。
+
+まず「Your Autonomous Navigation Assistant..YANA..起動しました」と挨拶してから、
+以下のチェック結果を簡潔に報告し、カメラに何が映っているか自然にコメントしてください。
+
+チェック結果:
+"""
+
+        # カメラ
+        camera = results.get("camera", {})
+        if camera.get("connected"):
+            prompt += f"- カメラ: OK ({camera.get('resolution', '不明')})\n"
         else:
-            startup_prompt = build_startup_prompt()
-        
-        # 起動プロンプトでエージェントループ実行
-        async for chunk in self.run_with_tools(startup_prompt, is_startup=True):
-            yield chunk
+            prompt += f"- カメラ: NG ({camera.get('error', '接続エラー')})\n"
+
+        # 明るさ分析
+        analysis = results.get("frame_analysis", {})
+        if analysis and not analysis.get("error"):
+            brightness = analysis.get("brightness", 0)
+            if analysis.get("is_very_dark"):
+                prompt += f"- 明るさ: 非常に暗い ({brightness:.0f}) - レンズキャップ？\n"
+            elif analysis.get("is_dark"):
+                prompt += f"- 明るさ: 暗め ({brightness:.0f})\n"
+            elif analysis.get("is_bright"):
+                prompt += f"- 明るさ: 明るすぎ ({brightness:.0f})\n"
+            else:
+                prompt += f"- 明るさ: 適切 ({brightness:.0f})\n"
+
+        # 物体検出
+        objects = results.get("objects", {})
+        if objects and not objects.get("error"):
+            detected = objects.get("detected_objects", {})
+            if detected:
+                obj_list = ", ".join([f"{k}: {v}個" for k, v in detected.items()])
+                prompt += f"- 検出物体: {obj_list}\n"
+            else:
+                prompt += "- 検出物体: なし\n"
+
+        # モデル
+        models = results.get("models", {})
+        if models and not models.get("error"):
+            llm_ok = models.get("llm", {}).get("exists", False)
+            prompt += f"- LLMモデル: {'OK' if llm_ok else 'NG'}\n"
+
+        # リソース
+        resources = results.get("resources", {})
+        if resources and not resources.get("error"):
+            free_mb = resources.get("memory_free_mb", 0)
+            prompt += f"- メモリ: {'OK' if free_mb > 2000 else 'NG'} ({free_mb}MB空き)\n"
+
+        prompt += """
+上記の結果をもとに、自然な日本語で報告してください。
+検出物体があれば「〜が見えます。〜のようですね。」のようにコメントしてください。
+問題があれば具体的なアドバイスを、全て正常なら「何かお手伝いできることはありますか？」で締めてください。
+"""
+
+        return prompt
 
     async def run_with_tools(self, user_input: str, is_startup: bool = False) -> AsyncGenerator[str, None]:
         """ツール呼び出しを含むエージェントループ（ストリーミング）"""
