@@ -113,21 +113,23 @@ class CameraManager:
                 print("[CameraManager] ✗ V4L2 camera failed to open")
                 return False
 
-            # CSIカメラはネイティブ解像度で取得し、後でリサイズする
+            # CSIカメラの最小モード 1280x720@60fps を使用してオーバーヘッド削減
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # バッファを最小化してレイテンシ削減
+
             ret, frame = cap.read()
             if not ret or frame is None:
                 cap.release()
                 print("[CameraManager] ✗ V4L2 camera test read failed")
                 return False
 
-            native_shape = frame.shape
-            print(f"[CameraManager] Native resolution: {native_shape[1]}x{native_shape[0]}")
-
-            # リサイズテスト
-            resized = cv2.resize(frame, (self.width, self.height))
+            capture_shape = frame.shape
+            print(f"[CameraManager] Capture mode: {capture_shape[1]}x{capture_shape[0]}")
 
             self._camera = _V4L2CameraWrapper(cap, self.width, self.height)
-            print(f"[CameraManager] ✓ V4L2 CSI started: native={native_shape[1]}x{native_shape[0]} -> resize to {self.width}x{self.height}")
+            print(f"[CameraManager] ✓ V4L2 CSI started: {capture_shape[1]}x{capture_shape[0]} -> {self.width}x{self.height}")
             return True
 
         except Exception as e:
@@ -135,7 +137,7 @@ class CameraManager:
             return False
 
     def read(self) -> Optional[np.ndarray]:
-        """フレーム取得"""
+        """フレーム取得（キャッシュ付き - 読み取り失敗時は最後の有効フレームを返す）"""
         if self._camera is None:
             return None
 
@@ -147,13 +149,23 @@ class CameraManager:
                     self._frame = frame.copy()
                 self.frame_count += 1
 
-                if self.frame_count % 30 == 0:
+                if self.frame_count % 100 == 0:
                     print(f"[CameraManager] Frame #{self.frame_count}: shape={frame.shape}")
 
-            return frame
+                return frame
+            else:
+                # 読み取り失敗時はキャッシュされたフレームを返す
+                with self._frame_lock:
+                    if self._frame is not None:
+                        return self._frame.copy()
+                return None
 
         except Exception as e:
             print(f"[CameraManager] Read error: {e}")
+            # エラー時もキャッシュを返す
+            with self._frame_lock:
+                if self._frame is not None:
+                    return self._frame.copy()
             return None
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
