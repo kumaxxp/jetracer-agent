@@ -1,23 +1,29 @@
-"""カメラ管理（シングルトン）- jetracer_minimal JetCamera使用"""
+"""カメラ管理（シングルトン）- jetracer_minimal JetCamera 使用"""
 import sys
+import os
 import cv2
 import numpy as np
 from typing import Optional
 import threading
 import time
 
-# jetracer_minimalのcamera.pyをインポート
-sys.path.insert(0, '/home/jetson/projects/jetracer_minimal')
+# jetracer_minimal の camera.py をインポート
+_JETRACER_MINIMAL_PATH = os.path.expanduser('~/jetracer_minimal')
+if _JETRACER_MINIMAL_PATH not in sys.path:
+    sys.path.insert(0, _JETRACER_MINIMAL_PATH)
+
 try:
     from camera import JetCamera
-    _JETCAM_AVAILABLE = True
-    print("[CameraManager] JetCamera from jetracer_minimal loaded")
+    _JETCAMERA_AVAILABLE = True
+    print("[CameraManager] ✓ JetCamera from jetracer_minimal loaded")
 except ImportError as e:
-    _JETCAM_AVAILABLE = False
-    print(f"[CameraManager] JetCamera not available: {e}")
+    _JETCAMERA_AVAILABLE = False
+    JetCamera = None
+    print(f"[CameraManager] ✗ JetCamera not available: {e}")
 
 
 class CameraManager:
+    """シングルトン カメラマネージャー"""
     _instance: Optional['CameraManager'] = None
     _lock = threading.Lock()
 
@@ -33,8 +39,8 @@ class CameraManager:
         if self._initialized:
             return
         self._initialized = True
-        self._camera: Optional[JetCamera] = None
-        self._frame = None
+        self._camera = None
+        self._frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
         self.frame_count = 0
         self.width = 640
@@ -43,69 +49,89 @@ class CameraManager:
 
     def start(self, width: int = 640, height: int = 480, fps: int = 15) -> bool:
         """カメラ起動"""
-        if self._camera is not None and self._camera.running:
-            print("[CameraManager] Camera already running")
-            return True
+        if self._camera is not None:
+            if hasattr(self._camera, 'running') and self._camera.running:
+                print("[CameraManager] Camera already running")
+                return True
 
         self.width = width
         self.height = height
         self.fps = fps
 
-        if not _JETCAM_AVAILABLE:
-            print("[CameraManager] JetCamera not available, using fallback")
-            return self._start_fallback()
+        # JetCamera を使用
+        if _JETCAMERA_AVAILABLE:
+            if self._start_jetcamera():
+                return True
 
+        # フォールバック: USB カメラ
+        return self._start_usb_fallback()
+
+    def _start_jetcamera(self) -> bool:
+        """JetCamera (jetracer_minimal) で起動"""
         try:
-            print(f"[CameraManager] Starting JetCamera: {width}x{height} @ {fps}fps")
+            print(f"[CameraManager] Starting JetCamera: {self.width}x{self.height} @ {self.fps}fps")
+
             self._camera = JetCamera(
-                width=width,
-                height=height,
-                fps=fps,
+                width=self.width,
+                height=self.height,
+                fps=self.fps,
                 capture_width=1280,
                 capture_height=720,
-                capture_fps=fps,
+                capture_fps=self.fps,
             )
-            
+
             if self._camera.start():
-                print("[CameraManager] ✓ JetCamera started successfully")
-                return True
+                # テスト読み込み
+                time.sleep(0.5)
+                test_frame = self._camera.read()
+                if test_frame is not None:
+                    print(f"[CameraManager] ✓ JetCamera started: shape={test_frame.shape}")
+                    return True
+                else:
+                    print("[CameraManager] ✗ JetCamera test read failed")
             else:
-                print("[CameraManager] JetCamera.start() failed")
-                self._camera = None
-                return self._start_fallback()
-                
+                print("[CameraManager] ✗ JetCamera.start() returned False")
+
+            self._camera.stop()
+            self._camera = None
+            return False
+
         except Exception as e:
-            print(f"[CameraManager] JetCamera error: {e}")
+            print(f"[CameraManager] ✗ JetCamera error: {e}")
             import traceback
             traceback.print_exc()
-            return self._start_fallback()
+            self._camera = None
+            return False
 
-    def _start_fallback(self) -> bool:
-        """USBカメラフォールバック"""
+    def _start_usb_fallback(self) -> bool:
+        """V4L2 CSI カメラフォールバック（リサイズ対応）"""
         try:
-            print(f"[CameraManager] Trying USB camera fallback")
-            
+            print(f"[CameraManager] Trying V4L2 CSI fallback with resize to {self.width}x{self.height}")
+
             cap = cv2.VideoCapture(0)
             if not cap.isOpened():
-                print("[CameraManager] USB camera failed")
+                print("[CameraManager] ✗ V4L2 camera failed to open")
                 return False
-            
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-            cap.set(cv2.CAP_PROP_FPS, self.fps)
-            
+
+            # CSIカメラはネイティブ解像度で取得し、後でリサイズする
             ret, frame = cap.read()
-            if not ret:
+            if not ret or frame is None:
                 cap.release()
+                print("[CameraManager] ✗ V4L2 camera test read failed")
                 return False
-            
-            # ダミーのJetCameraライクなラッパー
-            self._camera = _USBCameraWrapper(cap)
-            print(f"[CameraManager] ✓ USB fallback started: {frame.shape}")
+
+            native_shape = frame.shape
+            print(f"[CameraManager] Native resolution: {native_shape[1]}x{native_shape[0]}")
+
+            # リサイズテスト
+            resized = cv2.resize(frame, (self.width, self.height))
+
+            self._camera = _V4L2CameraWrapper(cap, self.width, self.height)
+            print(f"[CameraManager] ✓ V4L2 CSI started: native={native_shape[1]}x{native_shape[0]} -> resize to {self.width}x{self.height}")
             return True
-            
+
         except Exception as e:
-            print(f"[CameraManager] Fallback error: {e}")
+            print(f"[CameraManager] ✗ V4L2 fallback error: {e}")
             return False
 
     def read(self) -> Optional[np.ndarray]:
@@ -115,7 +141,7 @@ class CameraManager:
 
         try:
             frame = self._camera.read()
-            
+
             if frame is not None:
                 with self._frame_lock:
                     self._frame = frame.copy()
@@ -131,7 +157,7 @@ class CameraManager:
             return None
 
     def get_latest_frame(self) -> Optional[np.ndarray]:
-        """最新フレーム取得（読み取りなし）"""
+        """最新フレーム取得（新規読み取りなし）"""
         with self._frame_lock:
             return self._frame.copy() if self._frame is not None else None
 
@@ -142,6 +168,10 @@ class CameraManager:
         if hasattr(self._camera, 'running'):
             return self._camera.running
         return True
+
+    def get_resolution(self) -> tuple:
+        """現在の解像度を返す"""
+        return (self.width, self.height)
 
     def stop(self):
         """カメラ停止"""
@@ -155,19 +185,29 @@ class CameraManager:
             self._camera = None
 
 
-class _USBCameraWrapper:
-    """USBカメラ用の簡易ラッパー（JetCameraインターフェース互換）"""
-    def __init__(self, cap):
+class _V4L2CameraWrapper:
+    """V4L2 CSI カメラ用ラッパー（リサイズ対応）"""
+    def __init__(self, cap: cv2.VideoCapture, target_width: int, target_height: int):
         self._cap = cap
+        self._target_width = target_width
+        self._target_height = target_height
         self.running = True
-    
-    def read(self):
+
+    def read(self) -> Optional[np.ndarray]:
+        if not self.running:
+            return None
         ret, frame = self._cap.read()
-        return frame if ret else None
-    
+        if not ret or frame is None:
+            return None
+        # ネイティブ解像度からターゲット解像度にリサイズ
+        if frame.shape[1] != self._target_width or frame.shape[0] != self._target_height:
+            frame = cv2.resize(frame, (self._target_width, self._target_height))
+        return frame
+
     def stop(self):
         self.running = False
-        self._cap.release()
+        if self._cap is not None:
+            self._cap.release()
 
 
 # シングルトンインスタンス

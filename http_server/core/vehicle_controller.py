@@ -13,11 +13,16 @@ class VehicleController:
         """JetRacer初期化"""
         try:
             from jetracer.nvidia_racecar import NvidiaRacecar
-            self._car = NvidiaRacecar()
+            # type: "TT02" or "OPTION" - タミヤTT-02シャーシの場合はTT02
+            self._car = NvidiaRacecar(type="TT02")
             self._car.steering = 0.0
             self._car.throttle = 0.0
+            print("[Vehicle] ✓ JetRacer (TT02) initialized")
+        except ImportError:
+            print("[Vehicle] ✗ jetracer module not installed")
+            self._car = None
         except Exception as e:
-            print(f"[Vehicle] JetRacer not available: {e}")
+            print(f"[Vehicle] ✗ JetRacer not available: {e}")
             self._car = None
 
     def set_steering(self, value: float):
