@@ -22,6 +22,14 @@ from tools.system import (
     check_model_files
 )
 from tools.detection import detect_objects
+from tools.calibration import (
+    get_calibration_status,
+    detect_checkerboard,
+    capture_calibration_pair,
+    run_calibration,
+    get_calibration_instruction,
+    clear_calibration_images
+)
 
 server = Server("jetracer-tools")
 
@@ -124,6 +132,64 @@ TOOL_DEFINITIONS = [
             "required": []
         }
     ),
+    
+    # === キャリブレーションツール ===
+    types.Tool(
+        name="get_calibration_status",
+        description="カメラキャリブレーションの状態を取得する。撮影済み画像数、キャリブレーション済みかどうか、RMSエラー等を確認",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    ),
+    types.Tool(
+        name="detect_checkerboard",
+        description="指定カメラでチェッカーボードを検出する。キャリブレーション撮影前の確認に使用",
+        inputSchema={
+            "type": "object",
+            "properties": {
+                "camera_id": {"type": "integer", "description": "カメラID (0 or 1)"}
+            },
+            "required": ["camera_id"]
+        }
+    ),
+    types.Tool(
+        name="capture_calibration_pair",
+        description="両カメラで同時にキャリブレーション用画像を撮影する。20ペア程度必要",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    ),
+    types.Tool(
+        name="run_calibration",
+        description="収集した画像でキャリブレーションを実行する。10枚以上の画像が必要",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    ),
+    types.Tool(
+        name="get_calibration_instruction",
+        description="次のキャリブレーション撮影の指示を取得する。チェッカーボードをどこに配置すべきかを指示",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    ),
+    types.Tool(
+        name="clear_calibration_images",
+        description="収集したキャリブレーション画像をすべてクリアする",
+        inputSchema={
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    ),
 ]
 
 @server.list_tools()
@@ -156,6 +222,20 @@ async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent
             result = await check_system_resources()
         elif name == "check_model_files":
             result = await check_model_files()
+        
+        # キャリブレーションツール
+        elif name == "get_calibration_status":
+            result = await get_calibration_status()
+        elif name == "detect_checkerboard":
+            result = await detect_checkerboard(arguments["camera_id"])
+        elif name == "capture_calibration_pair":
+            result = await capture_calibration_pair()
+        elif name == "run_calibration":
+            result = await run_calibration()
+        elif name == "get_calibration_instruction":
+            result = await get_calibration_instruction()
+        elif name == "clear_calibration_images":
+            result = await clear_calibration_images()
         
         else:
             result = {"error": f"Unknown tool: {name}"}
