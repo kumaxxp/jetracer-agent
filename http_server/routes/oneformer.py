@@ -7,12 +7,9 @@ import time
 import numpy as np
 from PIL import Image
 import io
-import sys
-
-# jetracer_annotation_tool のパスを追加
-sys.path.insert(0, '/home/jetson/projects/jetracer_annotation_tool')
 
 from ..core.camera_manager import camera_manager
+from ..core.ade20k_labels import get_label_color, get_label_name
 
 router = APIRouter()
 
@@ -26,25 +23,19 @@ def get_segmenter():
     if _segmenter is None:
         print("[OneFormer] Loading model... (this may take a minute)")
         try:
-            from core.ade20k_segmentation import ADE20KSegmenter
+            from ..core.ade20k_segmentation import ADE20KSegmenter
             _segmenter = ADE20KSegmenter()
             print("[OneFormer] Model loaded successfully")
         except Exception as e:
             print(f"[OneFormer] Failed to load model: {e}")
+            import traceback
+            traceback.print_exc()
             raise
     return _segmenter
 
 
 def create_overlay_image(original: np.ndarray, seg_mask: np.ndarray, alpha: float = 0.5) -> np.ndarray:
     """セグメンテーションマスクからオーバーレイ画像を作成"""
-    try:
-        from data.ade20k_labels import get_label_color
-    except ImportError:
-        # フォールバック: 簡易カラーマップ
-        def get_label_color(label_id):
-            np.random.seed(label_id)
-            return tuple(np.random.randint(0, 255, 3).tolist())
-    
     height, width = seg_mask.shape
     overlay = np.zeros((height, width, 3), dtype=np.uint8)
     
@@ -54,13 +45,14 @@ def create_overlay_image(original: np.ndarray, seg_mask: np.ndarray, alpha: floa
         color = get_label_color(int(label_id))
         overlay[mask] = color
     
-    # 元画像とブレンド
+    # 元画像をRGBに変換
     original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
     
     # サイズが異なる場合はリサイズ
     if original_rgb.shape[:2] != overlay.shape[:2]:
         overlay = cv2.resize(overlay, (original_rgb.shape[1], original_rgb.shape[0]))
     
+    # ブレンド
     blended = cv2.addWeighted(original_rgb, 1 - alpha, overlay, alpha, 0)
     return blended
 
@@ -71,10 +63,9 @@ def run_oneformer(camera_id: int = 0):
     start_time = time.time()
     
     # カメラからフレーム取得
-    # TODO: 複数カメラ対応。現在はcamera_idは無視してメインカメラを使用
-    frame = camera_manager.read()
+    frame = camera_manager.read(camera_id)
     if frame is None:
-        raise HTTPException(status_code=503, detail=f"Camera not available")
+        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
     
     capture_time = time.time()
     
@@ -84,6 +75,7 @@ def run_oneformer(camera_id: int = 0):
         
         # フレームを一時ファイルに保存（OneFormerはファイルパスを期待）
         import tempfile
+        import os
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
             cv2.imwrite(tmp.name, frame)
             tmp_path = tmp.name
@@ -92,7 +84,6 @@ def run_oneformer(camera_id: int = 0):
         seg_mask = segmenter.segment_image(tmp_path)
         
         # 一時ファイル削除
-        import os
         os.unlink(tmp_path)
         
         seg_time = time.time()
@@ -132,4 +123,6 @@ def run_oneformer(camera_id: int = 0):
         }
         
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"OneFormer error: {str(e)}")
