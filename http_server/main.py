@@ -14,18 +14,22 @@ async def lifespan(app: FastAPI):
     """起動・終了処理"""
     # 起動時
     print("[Server] Starting JetRacer HTTP API Server...")
-    camera_manager.start(
+
+    # 複数カメラを起動（カメラ0, 1）
+    results = camera_manager.start_all(
         width=config.camera_width,
         height=config.camera_height,
-        fps=config.camera_fps
+        fps=config.camera_fps,
+        camera_ids=[0, 1]
     )
-    print(f"[Server] Camera ready: {camera_manager.is_ready()}")
+    for cid, ok in results.items():
+        print(f"[Server] Camera {cid}: {'ready' if ok else 'failed'}")
 
     yield
 
     # 終了時
     print("[Server] Shutting down...")
-    camera_manager.stop()
+    camera_manager.stop()  # 全カメラ停止
 
 
 app = FastAPI(
@@ -60,13 +64,15 @@ def root():
         "name": "JetRacer API",
         "version": "1.0.0",
         "endpoints": [
-            "GET  /status             - システム状態",
-            "POST /capture            - カメラ画像取得",
-            "POST /analyze            - 統合解析",
-            "POST /control            - 車両制御",
-            "POST /stop               - 緊急停止",
-            "GET  /stream/{camera_id} - MJPEGストリーム",
-            "GET  /snapshot           - 単一JPEG画像",
+            "GET  /status                - システム状態",
+            "POST /capture               - カメラ画像取得",
+            "POST /analyze               - 統合解析",
+            "POST /control               - 車両制御",
+            "POST /stop                  - 緊急停止",
+            "GET  /stream                - MJPEGストリーム（デフォルト: カメラ0）",
+            "GET  /stream/{id}           - MJPEGストリーム（カメラ指定）",
+            "GET  /snapshot              - 単一JPEG（デフォルト: カメラ0）",
+            "GET  /snapshot/{id}         - 単一JPEG（カメラ指定）",
             "POST /oneformer/{camera_id} - OneFormerセグメンテーション"
         ]
     }

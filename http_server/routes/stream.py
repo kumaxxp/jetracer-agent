@@ -1,4 +1,4 @@
-"""MJPEG ストリーミング エンドポイント"""
+"""MJPEG ストリーミング エンドポイント（複数カメラ対応）"""
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse, Response
 import cv2
@@ -26,9 +26,8 @@ def generate_mjpeg(camera_id: int = 0) -> Generator[bytes, None, None]:
 
             last_frame_time = time.time()
 
-            # フレーム取得
-            # TODO: 複数カメラ対応。現在はcamera_idは無視
-            frame = camera_manager.read()
+            # フレーム取得（カメラIDを指定して読み取り）
+            frame = camera_manager.read(camera_id)
             if frame is None:
                 # カメラが準備できていない場合は待機
                 time.sleep(0.1)
@@ -50,21 +49,15 @@ def generate_mjpeg(camera_id: int = 0) -> Generator[bytes, None, None]:
             )
 
         except GeneratorExit:
-            print("[MJPEG] Stream closed by client")
+            print(f"[MJPEG] Stream closed by client (camera {camera_id})")
             break
         except Exception as e:
-            print(f"[MJPEG] Error: {e}")
+            print(f"[MJPEG] Error (camera {camera_id}): {e}")
             time.sleep(0.5)
 
 
-@router.get("/stream/{camera_id}")
-async def mjpeg_stream_with_id(camera_id: int = 0):
-    """
-    MJPEG ストリーミングエンドポイント（カメラID指定）
-
-    ブラウザで直接表示可能:
-    <img src="http://jetson:8000/stream/0" />
-    """
+def _stream_response(camera_id: int) -> StreamingResponse:
+    """ストリーミングレスポンス生成"""
     return StreamingResponse(
         generate_mjpeg(camera_id),
         media_type="multipart/x-mixed-replace; boundary=frame",
@@ -78,24 +71,51 @@ async def mjpeg_stream_with_id(camera_id: int = 0):
 
 
 @router.get("/stream")
-async def mjpeg_stream():
-    """
-    MJPEG ストリーミングエンドポイント（デフォルト camera_id=0）
+async def mjpeg_stream_default():
+    """MJPEG ストリーミング（デフォルト: カメラ0）
 
     ブラウザで直接表示可能:
     <img src="http://jetson:8000/stream" />
     """
-    return await mjpeg_stream_with_id(0)
+    return _stream_response(0)
+
+
+@router.get("/stream/{camera_id}")
+async def mjpeg_stream(camera_id: int):
+    """MJPEG ストリーミング（カメラID指定）
+
+    - /stream/0 - カメラ0
+    - /stream/1 - カメラ1
+    """
+    if camera_id not in [0, 1]:
+        raise HTTPException(status_code=400, detail="Invalid camera_id. Use 0 or 1.")
+
+    if not camera_manager.is_ready(camera_id):
+        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not ready")
+
+    return _stream_response(camera_id)
 
 
 @router.get("/snapshot")
-async def snapshot():
+async def snapshot_default():
+    """単一フレーム取得（デフォルト: カメラ0）"""
+    return await snapshot(0)
+
+
+@router.get("/snapshot/{camera_id}")
+async def snapshot(camera_id: int):
     """
-    単一フレーム取得（JPEG画像として返す）
+    単一フレーム取得（カメラID指定）
+
+    - /snapshot/0 - カメラ0
+    - /snapshot/1 - カメラ1
     """
-    frame = camera_manager.read()
+    if camera_id not in [0, 1]:
+        raise HTTPException(status_code=400, detail="Invalid camera_id. Use 0 or 1.")
+
+    frame = camera_manager.read(camera_id)
     if frame is None:
-        raise HTTPException(status_code=503, detail="Camera not ready")
+        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not ready")
 
     _, jpeg = cv2.imencode(
         '.jpg',
