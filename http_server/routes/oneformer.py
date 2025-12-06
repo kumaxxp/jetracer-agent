@@ -11,7 +11,7 @@ import io
 from typing import Optional, Dict, Set
 
 from ..core.camera_manager import camera_manager
-from ..core.ade20k_labels import get_label_color, get_label_name, ADE20K_LABELS
+from ..core.ade20k_labels import get_label_color
 from ..core.road_mapping import get_road_mapping
 
 router = APIRouter()
@@ -39,6 +39,8 @@ def get_segmenter():
             from ..core.ade20k_segmentation import ADE20KSegmenter
             _segmenter = ADE20KSegmenter()
             print("[OneFormer] Model loaded successfully")
+            # モデルのラベル名を確認
+            print(f"[OneFormer] Model id2label sample: {dict(list(_segmenter.id2label.items())[:5])}")
         except Exception as e:
             print(f"[OneFormer] Failed to load model: {e}")
             import traceback
@@ -48,19 +50,8 @@ def get_segmenter():
 
 
 def create_stripe_pattern(height: int, width: int, stripe_width: int = 10) -> np.ndarray:
-    """斜め線パターンを作成（NumPy高速化版）
-    
-    Args:
-        height: 画像の高さ
-        width: 画像の幅
-        stripe_width: ストライプの幅（ピクセル）
-        
-    Returns:
-        斜め線パターンのブールマスク
-    """
-    # メッシュグリッドで座標を生成
+    """斜め線パターンを作成（NumPy高速化版）"""
     y_coords, x_coords = np.ogrid[:height, :width]
-    # 斜め線パターン: (y + x) % (stripe_width * 2) < stripe_width
     pattern = ((y_coords + x_coords) % (stripe_width * 2)) < stripe_width
     return pattern
 
@@ -72,15 +63,7 @@ def create_overlay_image(
     highlight_road: bool = False,
     road_label_ids: Optional[Set[int]] = None
 ) -> np.ndarray:
-    """セグメンテーションマスクからオーバーレイ画像を作成
-    
-    Args:
-        original: 元画像 (BGR)
-        seg_mask: セグメンテーションマスク
-        alpha: ブレンド率
-        highlight_road: ROADラベルをハイライト表示
-        road_label_ids: ROADとしてマークされたラベルIDのセット
-    """
+    """セグメンテーションマスクからオーバーレイ画像を作成"""
     height, width = seg_mask.shape
     overlay = np.zeros((height, width, 3), dtype=np.uint8)
     
@@ -102,6 +85,8 @@ def create_overlay_image(
     
     # ROADハイライト（斜め線パターン）- ブレンド後に適用
     if highlight_road and road_label_ids:
+        print(f"[OneFormer] Highlighting ROAD labels: {road_label_ids}")
+        
         # セグマスクをブレンド後のサイズに合わせる
         if seg_mask.shape[:2] != blended.shape[:2]:
             seg_mask_resized = cv2.resize(seg_mask, (blended.shape[1], blended.shape[0]), interpolation=cv2.INTER_NEAREST)
@@ -111,40 +96,39 @@ def create_overlay_image(
         # 斜め線パターンを作成
         stripe_pattern = create_stripe_pattern(blended.shape[0], blended.shape[1], stripe_width=10)
         
-        # ROADラベルの領域に黄色の斜め線を直接描画（ブレンド後）
+        # ROADラベルの領域に黄色の斜め線を直接描画
         for label_id in road_label_ids:
             mask = seg_mask_resized == label_id
-            road_stripe_mask = mask & stripe_pattern
-            # 黄色でストライプを直接描画（ブレンドなし）
-            blended[road_stripe_mask] = [255, 255, 0]  # RGB: Yellow
+            pixel_count = np.sum(mask)
+            if pixel_count > 0:
+                print(f"[OneFormer] Label {label_id}: {pixel_count} pixels")
+                road_stripe_mask = mask & stripe_pattern
+                blended[road_stripe_mask] = [255, 255, 0]  # RGB: Yellow
     
     return blended
 
 
-def get_road_label_ids() -> Set[int]:
-    """ROADマッピングからラベルIDのセットを取得"""
+def get_road_label_ids_from_segmenter() -> Set[int]:
+    """ROADマッピングからラベルIDのセットを取得（OneFormerモデルのラベル名を使用）"""
     road_mapping = get_road_mapping()
-    road_label_names = road_mapping.get_road_labels()
+    road_label_names = set(road_mapping.get_road_labels())
+    
+    segmenter = get_segmenter()
     
     road_ids = set()
-    for label_name in road_label_names:
-        # ラベル名からIDを逆引き
-        for lid, lname in ADE20K_LABELS.items():
-            if lname == label_name:
-                road_ids.add(lid)
-                break
+    for lid, lname in segmenter.id2label.items():
+        if lname in road_label_names:
+            road_ids.add(int(lid))
+    
+    print(f"[OneFormer] Road label names: {road_label_names}")
+    print(f"[OneFormer] Road label IDs: {road_ids}")
     
     return road_ids
 
 
 @router.post("/oneformer/{camera_id}")
 def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
-    """OneFormerでセグメンテーションを実行
-    
-    Args:
-        camera_id: カメラID
-        highlight_road: ROADラベルを黄色斜め線でハイライト表示
-    """
+    """OneFormerでセグメンテーションを実行"""
     global _latest_seg_masks, _latest_seg_sizes
     
     start_time = time.time()
@@ -160,7 +144,7 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
         # モデル取得
         segmenter = get_segmenter()
         
-        # フレームを一時ファイルに保存（OneFormerはファイルパスを期待）
+        # フレームを一時ファイルに保存
         import tempfile
         import os
         with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
@@ -179,13 +163,13 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
         
         seg_time = time.time()
         
-        # 検出クラス情報
+        # 検出クラス情報（OneFormerモデルのラベル名を使用）
         unique_classes = np.unique(seg_mask)
         class_names = [segmenter.get_class_name(int(c)) for c in unique_classes]
         
-        # ROADマッピングを取得して各クラスの状態を追加
+        # ROADマッピング
         road_mapping = get_road_mapping()
-        road_label_ids = get_road_label_ids() if highlight_road else set()
+        road_label_ids = get_road_label_ids_from_segmenter() if highlight_road else set()
         
         class_info = []
         for class_id in unique_classes:
@@ -196,7 +180,7 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
                 "is_road": road_mapping.is_road(name)
             })
         
-        # オーバーレイ画像作成（ROADハイライト付き）
+        # オーバーレイ画像作成
         overlay = create_overlay_image(
             frame, seg_mask, alpha=0.5, 
             highlight_road=highlight_road,
@@ -227,6 +211,7 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
             "height": frame.shape[0],
             "road_labels": road_mapping.get_road_labels(),
             "highlight_road": highlight_road,
+            "road_label_ids": list(road_label_ids) if highlight_road else [],
             "process_time_ms": (end_time - start_time) * 1000,
             "capture_time_ms": (capture_time - start_time) * 1000,
             "segmentation_time_ms": (seg_time - capture_time) * 1000
@@ -240,12 +225,7 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
 
 @router.post("/oneformer/{camera_id}/label-at-position")
 def get_label_at_position(camera_id: int, request: ClickRequest):
-    """クリック位置のラベルを取得
-    
-    Args:
-        camera_id: カメラID
-        request: クリック位置 (x, y は 0.0-1.0 の相対座標)
-    """
+    """クリック位置のラベルを取得"""
     if camera_id not in _latest_seg_masks:
         raise HTTPException(
             status_code=404, 
@@ -265,11 +245,16 @@ def get_label_at_position(camera_id: int, request: ClickRequest):
     
     # ラベルID取得
     label_id = int(seg_mask[y, x])
-    label_name = get_label_name(label_id)
+    
+    # OneFormerモデルのラベル名を使用
+    segmenter = get_segmenter()
+    label_name = segmenter.get_class_name(label_id)
     
     # ROADかどうか確認
     road_mapping = get_road_mapping()
     is_road = road_mapping.is_road(label_name)
+    
+    print(f"[OneFormer] Click at ({x}, {y}): label_id={label_id}, name={label_name}, is_road={is_road}")
     
     return {
         "x": request.x,
@@ -285,12 +270,7 @@ def get_label_at_position(camera_id: int, request: ClickRequest):
 
 @router.post("/oneformer/{camera_id}/toggle-road-at-position")
 def toggle_road_at_position(camera_id: int, request: ClickRequest):
-    """クリック位置のラベルのROAD状態をトグル
-    
-    Args:
-        camera_id: カメラID
-        request: クリック位置 (x, y は 0.0-1.0 の相対座標)
-    """
+    """クリック位置のラベルのROAD状態をトグル"""
     # まずラベルを取得
     label_info = get_label_at_position(camera_id, request)
     label_name = label_info["label_name"]
@@ -298,6 +278,9 @@ def toggle_road_at_position(camera_id: int, request: ClickRequest):
     # ROADをトグル
     road_mapping = get_road_mapping()
     new_state = road_mapping.toggle_road(label_name)
+    
+    print(f"[OneFormer] Toggle ROAD: {label_name} -> {new_state}")
+    print(f"[OneFormer] Current ROAD labels: {road_mapping.get_road_labels()}")
     
     return {
         "label_name": label_name,
