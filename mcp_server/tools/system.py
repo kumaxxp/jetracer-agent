@@ -44,8 +44,10 @@ async def check_camera() -> dict:
         if not ret or frame is None:
             return {"connected": False, "error": "フレーム取得失敗"}
         
-        # フレームを一時保存
-        temp_path = "/tmp/yana_startup_frame.jpg"
+        # フレームを一時保存（プロジェクトディレクトリ内）
+        temp_dir = Path(__file__).parent.parent.parent / "tmp"
+        temp_dir.mkdir(exist_ok=True)
+        temp_path = str(temp_dir / "yana_startup_frame.jpg")
         cv2.imwrite(temp_path, frame)
         
         return {
@@ -148,32 +150,59 @@ async def check_system_resources() -> dict:
 
 async def check_model_files() -> dict:
     """必要なモデルファイルの存在を確認する
-    
+
     Returns:
         各モデルの存在状況
     """
-    models = {
-        "llm": Path.home() / "models" / "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+    results = {}
+
+    # LLM: Ollamaモデルをチェック
+    try:
+        ollama_result = subprocess.run(
+            ['ollama', 'list'],
+            capture_output=True, text=True, timeout=5
+        )
+        if ollama_result.returncode == 0 and 'gemma3:4b' in ollama_result.stdout:
+            results["llm"] = {
+                "path": "ollama:gemma3:4b",
+                "exists": True,
+                "backend": "ollama"
+            }
+        else:
+            # フォールバック: ローカルGGUFファイル
+            gguf_paths = [
+                Path.home() / "models" / "qwen2.5-3b-instruct-q4_k_m.gguf",
+                Path.home() / "models" / "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+            ]
+            for path in gguf_paths:
+                if path.exists():
+                    results["llm"] = {"path": str(path), "exists": True, "backend": "llama-cpp"}
+                    break
+            else:
+                results["llm"] = {"path": "なし", "exists": False}
+    except Exception:
+        results["llm"] = {"path": "確認エラー", "exists": False}
+
+    # プロジェクトルート
+    project_root = Path(__file__).parent.parent
+
+    # その他のモデル
+    other_models = {
         "segmentation": Path("models/road_segmentation.onnx"),
         "yolo": Path("models/yolov8n.pt")
     }
-    
-    # プロジェクトルートからの相対パスも試す
-    project_root = Path(__file__).parent.parent
-    
-    results = {}
-    for name, path in models.items():
+
+    for name, path in other_models.items():
         exists = path.exists()
         if not exists and not path.is_absolute():
-            # プロジェクトルートからの相対パスを試す
             alt_path = project_root / path
             exists = alt_path.exists()
             if exists:
                 path = alt_path
-        
+
         results[name] = {
             "path": str(path),
             "exists": exists
         }
-    
+
     return results

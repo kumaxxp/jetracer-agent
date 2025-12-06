@@ -1,13 +1,17 @@
-# LLM設定
-llm:
-  # 使用モデル
-  model: "gemma3:4b"
+# YANA LLM設定
+# Gemma 3 4B + Ollama + Hybrid アプローチ
 
-  # Ollama URL
+llm:
+  # バックエンド設定
+  backend: "ollama"
+  model: "gemma3:4b"
   ollama_url: "http://localhost:11434/api/generate"
 
   # ツール呼び出しアプローチ
-  # react, json, twostage, hybrid から選択
+  # react: ReActパターン（Thought/Action/Action Input）
+  # json: JSON出力モード
+  # twostage: 意図分類→引数抽出の2段階
+  # hybrid: キーワードマッチング + LLM補助（推奨）
   approach: "hybrid"
 
   # 生成パラメータ
@@ -15,7 +19,53 @@ llm:
   max_tokens: 300
 
   # メモリ最適化（Jetson用）
-  context_length: 2048  # 128Kではなく2Kに制限
+  context_length: 2048
+
+# ツールキーワード設定（hybridアプローチ用）
+# 優先度順（check_cameraなど特定的なものを先に）
+tools:
+  keywords:
+    check_camera:
+      - "カメラ"
+      - "撮影"
+      - "状態確認"
+      - "動いて"
+      - "接続"
+      - "起動"
+      - "カメラ確認"
+    list_images:
+      - "画像一覧"
+      - "画像を見"
+      - "リスト"
+      - "ファイル一覧"
+      - "中身を確認"
+      - "フォルダの中"
+      - "ディレクトリ"
+      - "画像ファイル"
+    analyze_frame:
+      - "明るさ"
+      - "コントラスト"
+      - "分析"
+    detect_objects:
+      - "物体検出"
+      - "何が映"
+      - "検出"
+      - "認識"
+    check_system_resources:
+      - "メモリ"
+      - "リソース"
+      - "GPU"
+      - "システム"
+    evaluate_quality:
+      - "品質"
+      - "ブレ"
+      - "露出"
+
+# パス設定
+paths:
+  data_dir: "/home/jetson/jetracer_minimal/data"
+  models_dir: "/home/jetson/models"
+  mcp_server: "mcp_server/server.py"
 
 # 代替設定（Gemma 3が動作しない場合）
 fallback:
