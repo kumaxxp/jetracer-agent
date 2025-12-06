@@ -8,10 +8,10 @@ import time
 import numpy as np
 from PIL import Image
 import io
-from typing import Optional, Dict
+from typing import Optional, Dict, Set
 
 from ..core.camera_manager import camera_manager
-from ..core.ade20k_labels import get_label_color, get_label_name
+from ..core.ade20k_labels import get_label_color, get_label_name, ADE20K_LABELS
 from ..core.road_mapping import get_road_mapping
 
 router = APIRouter()
@@ -47,11 +47,30 @@ def get_segmenter():
     return _segmenter
 
 
+def create_stripe_pattern(height: int, width: int, stripe_width: int = 10) -> np.ndarray:
+    """斜め線パターンを作成（NumPy高速化版）
+    
+    Args:
+        height: 画像の高さ
+        width: 画像の幅
+        stripe_width: ストライプの幅（ピクセル）
+        
+    Returns:
+        斜め線パターンのブールマスク
+    """
+    # メッシュグリッドで座標を生成
+    y_coords, x_coords = np.ogrid[:height, :width]
+    # 斜め線パターン: (y + x) % (stripe_width * 2) < stripe_width
+    pattern = ((y_coords + x_coords) % (stripe_width * 2)) < stripe_width
+    return pattern
+
+
 def create_overlay_image(
     original: np.ndarray, 
     seg_mask: np.ndarray, 
     alpha: float = 0.5,
-    highlight_road: bool = False
+    highlight_road: bool = False,
+    road_label_ids: Optional[Set[int]] = None
 ) -> np.ndarray:
     """セグメンテーションマスクからオーバーレイ画像を作成
     
@@ -60,25 +79,28 @@ def create_overlay_image(
         seg_mask: セグメンテーションマスク
         alpha: ブレンド率
         highlight_road: ROADラベルをハイライト表示
+        road_label_ids: ROADとしてマークされたラベルIDのセット
     """
     height, width = seg_mask.shape
     overlay = np.zeros((height, width, 3), dtype=np.uint8)
     
-    # ROADマッピングを取得
-    road_mapping = get_road_mapping() if highlight_road else None
-    
     # 各ラベルに色を割り当て
     for label_id in np.unique(seg_mask):
         mask = seg_mask == label_id
-        label_name = get_label_name(int(label_id))
-        
-        if highlight_road and road_mapping and road_mapping.is_road(label_name):
-            # ROADラベルは緑でハイライト
-            color = (0, 255, 0)
-        else:
-            color = get_label_color(int(label_id))
-        
+        color = get_label_color(int(label_id))
         overlay[mask] = color
+    
+    # ROADハイライト（斜め線パターン）
+    if highlight_road and road_label_ids:
+        # 斜め線パターンを作成
+        stripe_pattern = create_stripe_pattern(height, width, stripe_width=10)
+        
+        # ROADラベルの領域に黄色の斜め線を適用
+        for label_id in road_label_ids:
+            mask = seg_mask == label_id
+            road_stripe_mask = mask & stripe_pattern
+            # 黄色でストライプを描画
+            overlay[road_stripe_mask] = [255, 255, 0]  # RGB: Yellow
     
     # 元画像をRGBに変換
     original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
@@ -92,13 +114,29 @@ def create_overlay_image(
     return blended
 
 
+def get_road_label_ids() -> Set[int]:
+    """ROADマッピングからラベルIDのセットを取得"""
+    road_mapping = get_road_mapping()
+    road_label_names = road_mapping.get_road_labels()
+    
+    road_ids = set()
+    for label_name in road_label_names:
+        # ラベル名からIDを逆引き
+        for lid, lname in ADE20K_LABELS.items():
+            if lname == label_name:
+                road_ids.add(lid)
+                break
+    
+    return road_ids
+
+
 @router.post("/oneformer/{camera_id}")
 def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
     """OneFormerでセグメンテーションを実行
     
     Args:
         camera_id: カメラID
-        highlight_road: ROADラベルを緑でハイライト表示
+        highlight_road: ROADラベルを黄色斜め線でハイライト表示
     """
     global _latest_seg_masks, _latest_seg_sizes
     
@@ -140,6 +178,8 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
         
         # ROADマッピングを取得して各クラスの状態を追加
         road_mapping = get_road_mapping()
+        road_label_ids = get_road_label_ids() if highlight_road else set()
+        
         class_info = []
         for class_id in unique_classes:
             name = segmenter.get_class_name(int(class_id))
@@ -149,8 +189,12 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
                 "is_road": road_mapping.is_road(name)
             })
         
-        # オーバーレイ画像作成
-        overlay = create_overlay_image(frame, seg_mask, alpha=0.5, highlight_road=highlight_road)
+        # オーバーレイ画像作成（ROADハイライト付き）
+        overlay = create_overlay_image(
+            frame, seg_mask, alpha=0.5, 
+            highlight_road=highlight_road,
+            road_label_ids=road_label_ids
+        )
         
         # Base64エンコード
         overlay_pil = Image.fromarray(overlay)
@@ -175,6 +219,7 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
             "width": frame.shape[1],
             "height": frame.shape[0],
             "road_labels": road_mapping.get_road_labels(),
+            "highlight_road": highlight_road,
             "process_time_ms": (end_time - start_time) * 1000,
             "capture_time_ms": (capture_time - start_time) * 1000,
             "segmentation_time_ms": (seg_time - capture_time) * 1000
