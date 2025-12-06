@@ -11,7 +11,7 @@ from ..config import config
 router = APIRouter()
 
 
-def generate_mjpeg() -> Generator[bytes, None, None]:
+def generate_mjpeg(camera_id: int = 0) -> Generator[bytes, None, None]:
     """MJPEG フレーム生成ジェネレーター"""
     frame_interval = 1.0 / 15  # 15 FPS
     last_frame_time = 0
@@ -27,6 +27,7 @@ def generate_mjpeg() -> Generator[bytes, None, None]:
             last_frame_time = time.time()
 
             # フレーム取得
+            # TODO: 複数カメラ対応。現在はcamera_idは無視
             frame = camera_manager.read()
             if frame is None:
                 # カメラが準備できていない場合は待機
@@ -56,16 +57,16 @@ def generate_mjpeg() -> Generator[bytes, None, None]:
             time.sleep(0.5)
 
 
-@router.get("/stream")
-async def mjpeg_stream():
+@router.get("/stream/{camera_id}")
+async def mjpeg_stream_with_id(camera_id: int = 0):
     """
-    MJPEG ストリーミングエンドポイント
+    MJPEG ストリーミングエンドポイント（カメラID指定）
 
     ブラウザで直接表示可能:
-    <img src="http://jetson:8000/stream" />
+    <img src="http://jetson:8000/stream/0" />
     """
     return StreamingResponse(
-        generate_mjpeg(),
+        generate_mjpeg(camera_id),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={
             "Cache-Control": "no-cache, no-store, must-revalidate",
@@ -74,6 +75,17 @@ async def mjpeg_stream():
             "Access-Control-Allow-Origin": "*",
         }
     )
+
+
+@router.get("/stream")
+async def mjpeg_stream():
+    """
+    MJPEG ストリーミングエンドポイント（デフォルト camera_id=0）
+
+    ブラウザで直接表示可能:
+    <img src="http://jetson:8000/stream" />
+    """
+    return await mjpeg_stream_with_id(0)
 
 
 @router.get("/snapshot")

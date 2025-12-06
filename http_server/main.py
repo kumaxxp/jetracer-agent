@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream
+from .routes import status, camera, analysis, control, stream, oneformer
 from .core.camera_manager import camera_manager
 from .config import config
 
@@ -50,6 +50,7 @@ app.include_router(camera.router, tags=["camera"])
 app.include_router(analysis.router, tags=["analysis"])
 app.include_router(control.router, tags=["control"])
 app.include_router(stream.router, tags=["stream"])
+app.include_router(oneformer.router, tags=["oneformer"])
 
 
 @app.get("/")
@@ -59,13 +60,14 @@ def root():
         "name": "JetRacer API",
         "version": "1.0.0",
         "endpoints": [
-            "GET  /status   - システム状態",
-            "POST /capture  - カメラ画像取得",
-            "POST /analyze  - 統合解析",
-            "POST /control  - 車両制御",
-            "POST /stop     - 緊急停止",
-            "GET  /stream   - MJPEGストリーム",
-            "GET  /snapshot - 単一JPEG画像"
+            "GET  /status             - システム状態",
+            "POST /capture            - カメラ画像取得",
+            "POST /analyze            - 統合解析",
+            "POST /control            - 車両制御",
+            "POST /stop               - 緊急停止",
+            "GET  /stream/{camera_id} - MJPEGストリーム",
+            "GET  /snapshot           - 単一JPEG画像",
+            "POST /oneformer/{camera_id} - OneFormerセグメンテーション"
         ]
     }
 
