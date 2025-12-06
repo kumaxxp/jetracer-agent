@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping
 from .core.camera_manager import camera_manager
 from .config import config
 
@@ -55,6 +55,7 @@ app.include_router(analysis.router, tags=["analysis"])
 app.include_router(control.router, tags=["control"])
 app.include_router(stream.router, tags=["stream"])
 app.include_router(oneformer.router, tags=["oneformer"])
+app.include_router(road_mapping.router, tags=["road-mapping"])
 
 
 @app.get("/")
@@ -73,7 +74,11 @@ def root():
             "GET  /stream/{id}           - MJPEGストリーム（カメラ指定）",
             "GET  /snapshot              - 単一JPEG（デフォルト: カメラ0）",
             "GET  /snapshot/{id}         - 単一JPEG（カメラ指定）",
-            "POST /oneformer/{camera_id} - OneFormerセグメンテーション"
+            "POST /oneformer/{camera_id} - OneFormerセグメンテーション",
+            "POST /oneformer/{camera_id}/label-at-position - クリック位置のラベル取得",
+            "POST /oneformer/{camera_id}/toggle-road-at-position - クリック位置のROADトグル",
+            "GET  /road-mapping - ROADマッピング取得",
+            "POST /road-mapping/toggle - ROADラベルトグル"
         ]
     }
 
