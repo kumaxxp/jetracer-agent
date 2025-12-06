@@ -90,18 +90,6 @@ def create_overlay_image(
         color = get_label_color(int(label_id))
         overlay[mask] = color
     
-    # ROADハイライト（斜め線パターン）
-    if highlight_road and road_label_ids:
-        # 斜め線パターンを作成
-        stripe_pattern = create_stripe_pattern(height, width, stripe_width=10)
-        
-        # ROADラベルの領域に黄色の斜め線を適用
-        for label_id in road_label_ids:
-            mask = seg_mask == label_id
-            road_stripe_mask = mask & stripe_pattern
-            # 黄色でストライプを描画
-            overlay[road_stripe_mask] = [255, 255, 0]  # RGB: Yellow
-    
     # 元画像をRGBに変換
     original_rgb = cv2.cvtColor(original, cv2.COLOR_BGR2RGB)
     
@@ -111,6 +99,25 @@ def create_overlay_image(
     
     # ブレンド
     blended = cv2.addWeighted(original_rgb, 1 - alpha, overlay, alpha, 0)
+    
+    # ROADハイライト（斜め線パターン）- ブレンド後に適用
+    if highlight_road and road_label_ids:
+        # セグマスクをブレンド後のサイズに合わせる
+        if seg_mask.shape[:2] != blended.shape[:2]:
+            seg_mask_resized = cv2.resize(seg_mask, (blended.shape[1], blended.shape[0]), interpolation=cv2.INTER_NEAREST)
+        else:
+            seg_mask_resized = seg_mask
+        
+        # 斜め線パターンを作成
+        stripe_pattern = create_stripe_pattern(blended.shape[0], blended.shape[1], stripe_width=10)
+        
+        # ROADラベルの領域に黄色の斜め線を直接描画（ブレンド後）
+        for label_id in road_label_ids:
+            mask = seg_mask_resized == label_id
+            road_stripe_mask = mask & stripe_pattern
+            # 黄色でストライプを直接描画（ブレンドなし）
+            blended[road_stripe_mask] = [255, 255, 0]  # RGB: Yellow
+    
     return blended
 
 
