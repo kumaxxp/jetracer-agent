@@ -38,7 +38,7 @@ class CalibrationManager:
     """キャリブレーション管理"""
     
     def __init__(self, 
-                 pattern_size: Tuple[int, int] = (5, 3),  # 内側コーナー数
+                 pattern_size: Tuple[int, int] = (10, 8),  # 内側コーナー数 (11×9マス: 白6黒5 × 白5黒4)
                  square_size: float = 23.0,  # mm
                  data_dir: str = "calibration_data"):
         """
@@ -85,9 +85,47 @@ class CalibrationManager:
         """
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # チェッカーボード検出
-        flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
-        ret, corners = cv2.findChessboardCorners(gray, self.pattern_size, flags)
+        print(f"[Calibration] Detecting checkerboard: pattern_size={self.pattern_size}, image_shape={gray.shape}")
+        
+        # チェッカーボード検出（複数のフラグを試す）
+        flags_list = [
+            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE,
+            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK,
+            cv2.CALIB_CB_ADAPTIVE_THRESH,
+            0  # デフォルト
+        ]
+        
+        # 試すパターンサイズ（設定値 + 近いサイズ）
+        pattern_sizes_to_try = [
+            self.pattern_size,
+            (self.pattern_size[1], self.pattern_size[0]),  # 縦横逆
+            (self.pattern_size[0] + 1, self.pattern_size[1]),
+            (self.pattern_size[0], self.pattern_size[1] + 1),
+            (self.pattern_size[0] - 1, self.pattern_size[1]),
+            (self.pattern_size[0], self.pattern_size[1] - 1),
+        ]
+        
+        ret = False
+        corners = None
+        detected_pattern = None
+        
+        for pattern in pattern_sizes_to_try:
+            if pattern[0] < 2 or pattern[1] < 2:
+                continue
+            for i, flags in enumerate(flags_list):
+                ret, corners = cv2.findChessboardCorners(gray, pattern, flags)
+                if ret:
+                    print(f"[Calibration] Detected with pattern={pattern}, flags[{i}]")
+                    detected_pattern = pattern
+                    break
+            if ret:
+                break
+        
+        if not ret:
+            print(f"[Calibration] All detection methods failed for all pattern sizes")
+        elif detected_pattern != self.pattern_size:
+            print(f"[Calibration] WARNING: Detected with different pattern size: {detected_pattern} (expected {self.pattern_size})")
+            print(f"[Calibration] Consider updating pattern_size in CalibrationManager")
         
         if ret:
             # サブピクセル精度で補正
