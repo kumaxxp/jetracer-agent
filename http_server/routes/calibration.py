@@ -329,15 +329,18 @@ def run_stereo_calibration():
                 detail="Both cameras must be calibrated first. Run single camera calibration."
             )
         
-        status = calibration_manager.get_status()
-        cam0_count = status["captured_images"].get(0, 0)
-        cam1_count = status["captured_images"].get(1, 0)
-        pair_count = min(cam0_count, cam1_count)
+        # タイムスタンプベースでステレオペア数を取得
+        pair_count = calibration_manager.get_stereo_pair_count(max_time_diff_seconds=1.0)
         
         if pair_count < 10:
+            status = calibration_manager.get_status()
+            cam0_count = status["captured_images"].get(0, 0)
+            cam1_count = status["captured_images"].get(1, 0)
             raise HTTPException(
                 status_code=400,
-                detail=f"Not enough stereo pairs: {pair_count} < 10. Capture more stereo pairs."
+                detail=f"Not enough stereo pairs: {pair_count} valid pairs found (need 10+). "
+                       f"Images: cam0={cam0_count}, cam1={cam1_count}. "
+                       f"Use 'Capture Stereo Pair' to capture simultaneous images."
             )
         
         # ステレオキャリブレーションのみ実行

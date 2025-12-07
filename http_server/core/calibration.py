@@ -772,6 +772,19 @@ class CalibrationManager:
         else:
             return 0 in self._results and 1 in self._results
     
+    def get_stereo_pair_count(self, max_time_diff_seconds: float = 1.0) -> int:
+        """ステレオペアの数を取得（タイムスタンプベース）
+        
+        Args:
+            max_time_diff_seconds: ペアと見なす最大時間差（秒）
+            
+        Returns:
+            ステレオペア数
+        """
+        with self._lock:
+            pairs = self._find_stereo_pairs(max_time_diff_seconds)
+            return len(pairs)
+    
     def get_camera_matrix(self, camera_id: int) -> Optional[np.ndarray]:
         """カメラ行列を取得"""
         if camera_id not in self._results:
