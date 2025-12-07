@@ -126,9 +126,15 @@ def get_road_label_ids_from_segmenter() -> Set[int]:
     return road_ids
 
 
-@router.post("/oneformer/{camera_id}")
-def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
-    """OneFormerでセグメンテーションを実行"""
+def run_oneformer_internal(camera_id: int = 0, highlight_road: bool = False) -> dict:
+    """内部用: OneFormerセグメンテーション実行
+    
+    Returns:
+        成功時: セグメンテーション結果のdict
+    
+    Raises:
+        Exception: 失敗時
+    """
     global _latest_seg_masks, _latest_seg_sizes
     
     start_time = time.time()
@@ -136,87 +142,92 @@ def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
     # カメラからフレーム取得
     frame = camera_manager.read(camera_id)
     if frame is None:
-        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
+        raise Exception(f"Camera {camera_id} not available")
     
     capture_time = time.time()
     
+    # モデル取得
+    segmenter = get_segmenter()
+    
+    # フレームを一時ファイルに保存
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
+        cv2.imwrite(tmp.name, frame)
+        tmp_path = tmp.name
+    
+    # セグメンテーション実行
+    seg_mask = segmenter.segment_image(tmp_path)
+    
+    # 一時ファイル削除
+    os.unlink(tmp_path)
+    
+    # マスクを保存（クリック位置→ラベル変換用）
+    _latest_seg_masks[camera_id] = seg_mask
+    _latest_seg_sizes[camera_id] = (seg_mask.shape[0], seg_mask.shape[1])
+    
+    seg_time = time.time()
+    
+    # 検出クラス情報（OneFormerモデルのラベル名を使用）
+    unique_classes = np.unique(seg_mask)
+    class_names = [segmenter.get_class_name(int(c)) for c in unique_classes]
+    
+    # ROADマッピング
+    road_mapping = get_road_mapping()
+    road_label_ids = get_road_label_ids_from_segmenter() if highlight_road else set()
+    
+    class_info = []
+    for class_id in unique_classes:
+        name = segmenter.get_class_name(int(class_id))
+        class_info.append({
+            "id": int(class_id),
+            "name": name,
+            "is_road": road_mapping.is_road(name)
+        })
+    
+    # オーバーレイ画像作成
+    overlay = create_overlay_image(
+        frame, seg_mask, alpha=0.5, 
+        highlight_road=highlight_road,
+        road_label_ids=road_label_ids
+    )
+    
+    # Base64エンコード
+    overlay_pil = Image.fromarray(overlay)
+    overlay_buffer = io.BytesIO()
+    overlay_pil.save(overlay_buffer, format='PNG')
+    overlay_base64 = base64.b64encode(overlay_buffer.getvalue()).decode('utf-8')
+    
+    # 元画像
+    _, orig_buffer = cv2.imencode('.jpg', frame)
+    original_base64 = base64.b64encode(orig_buffer).decode('utf-8')
+    
+    end_time = time.time()
+    
+    return {
+        "timestamp": datetime.now().isoformat(),
+        "camera_id": camera_id,
+        "overlay_base64": overlay_base64,
+        "original_base64": original_base64,
+        "classes": class_names,
+        "class_info": class_info,
+        "num_classes": len(unique_classes),
+        "width": frame.shape[1],
+        "height": frame.shape[0],
+        "road_labels": road_mapping.get_road_labels(),
+        "highlight_road": highlight_road,
+        "road_label_ids": list(road_label_ids) if highlight_road else [],
+        "process_time_ms": (end_time - start_time) * 1000,
+        "capture_time_ms": (capture_time - start_time) * 1000,
+        "segmentation_time_ms": (seg_time - capture_time) * 1000
+    }
+
+
+@router.post("/oneformer/{camera_id}")
+def run_oneformer(camera_id: int = 0, highlight_road: bool = False):
+    """OneFormerでセグメンテーションを実行"""
     try:
-        # モデル取得
-        segmenter = get_segmenter()
-        
-        # フレームを一時ファイルに保存
-        import tempfile
-        import os
-        with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as tmp:
-            cv2.imwrite(tmp.name, frame)
-            tmp_path = tmp.name
-        
-        # セグメンテーション実行
-        seg_mask = segmenter.segment_image(tmp_path)
-        
-        # 一時ファイル削除
-        os.unlink(tmp_path)
-        
-        # マスクを保存（クリック位置→ラベル変換用）
-        _latest_seg_masks[camera_id] = seg_mask
-        _latest_seg_sizes[camera_id] = (seg_mask.shape[0], seg_mask.shape[1])
-        
-        seg_time = time.time()
-        
-        # 検出クラス情報（OneFormerモデルのラベル名を使用）
-        unique_classes = np.unique(seg_mask)
-        class_names = [segmenter.get_class_name(int(c)) for c in unique_classes]
-        
-        # ROADマッピング
-        road_mapping = get_road_mapping()
-        road_label_ids = get_road_label_ids_from_segmenter() if highlight_road else set()
-        
-        class_info = []
-        for class_id in unique_classes:
-            name = segmenter.get_class_name(int(class_id))
-            class_info.append({
-                "id": int(class_id),
-                "name": name,
-                "is_road": road_mapping.is_road(name)
-            })
-        
-        # オーバーレイ画像作成
-        overlay = create_overlay_image(
-            frame, seg_mask, alpha=0.5, 
-            highlight_road=highlight_road,
-            road_label_ids=road_label_ids
-        )
-        
-        # Base64エンコード
-        overlay_pil = Image.fromarray(overlay)
-        overlay_buffer = io.BytesIO()
-        overlay_pil.save(overlay_buffer, format='PNG')
-        overlay_base64 = base64.b64encode(overlay_buffer.getvalue()).decode('utf-8')
-        
-        # 元画像
-        _, orig_buffer = cv2.imencode('.jpg', frame)
-        original_base64 = base64.b64encode(orig_buffer).decode('utf-8')
-        
-        end_time = time.time()
-        
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "camera_id": camera_id,
-            "overlay_base64": overlay_base64,
-            "original_base64": original_base64,
-            "classes": class_names,
-            "class_info": class_info,
-            "num_classes": len(unique_classes),
-            "width": frame.shape[1],
-            "height": frame.shape[0],
-            "road_labels": road_mapping.get_road_labels(),
-            "highlight_road": highlight_road,
-            "road_label_ids": list(road_label_ids) if highlight_road else [],
-            "process_time_ms": (end_time - start_time) * 1000,
-            "capture_time_ms": (capture_time - start_time) * 1000,
-            "segmentation_time_ms": (seg_time - capture_time) * 1000
-        }
-        
+        return run_oneformer_internal(camera_id, highlight_road)
     except Exception as e:
         import traceback
         traceback.print_exc()

@@ -16,7 +16,7 @@ from .oneformer import (
     _latest_seg_masks,
     get_segmenter,
     get_road_label_ids_from_segmenter,
-    run_oneformer
+    run_oneformer_internal  # 内部関数を使用
 )
 
 
@@ -39,33 +39,33 @@ def analyze_road_distribution(seg_mask: np.ndarray, road_label_ids: Set[int]) ->
         road_mask |= (seg_mask == label_id)
     
     # 全体のROAD比率
-    total_road_ratio = road_mask.sum() / road_mask.size
+    total_road_ratio = float(road_mask.sum() / road_mask.size)
     
     # 左/中央/右の分割（3等分）
     left_region = road_mask[:, :w//3]
     center_region = road_mask[:, w//3:2*w//3]
     right_region = road_mask[:, 2*w//3:]
     
-    left_ratio = left_region.sum() / left_region.size
-    center_ratio = center_region.sum() / center_region.size
-    right_ratio = right_region.sum() / right_region.size
+    left_ratio = float(left_region.sum() / left_region.size)
+    center_ratio = float(center_region.sum() / center_region.size)
+    right_ratio = float(right_region.sum() / right_region.size)
     
     # 上部/下部の分割（前方の壁検出用）
     top_region = road_mask[:h//3, :]
     bottom_region = road_mask[2*h//3:, :]
     
-    top_ratio = top_region.sum() / top_region.size
-    bottom_ratio = bottom_region.sum() / bottom_region.size
+    top_ratio = float(top_region.sum() / top_region.size)
+    bottom_ratio = float(bottom_region.sum() / bottom_region.size)
     
     # 前方に壁があるか（上部のROAD比率が低い場合）
-    wall_ahead = top_ratio < 0.2
+    wall_ahead = bool(top_ratio < 0.2)
     
     # 左右の境界検出（端にROADがない場合）
     left_edge = road_mask[:, :w//10]  # 左端10%
     right_edge = road_mask[:, -w//10:]  # 右端10%
     
-    left_boundary = left_edge.sum() / left_edge.size < 0.3
-    right_boundary = right_edge.sum() / right_edge.size < 0.3
+    left_boundary = bool(left_edge.sum() / left_edge.size < 0.3)
+    right_boundary = bool(right_edge.sum() / right_edge.size < 0.3)
     
     # 主要な道の方向
     if center_ratio > left_ratio and center_ratio > right_ratio:
@@ -220,7 +220,7 @@ def update_situation(run_segmentation: bool = True):
         for camera_id in [0, 1]:
             try:
                 print(f"[Navigation] Running segmentation for camera {camera_id}...")
-                seg_result = run_oneformer(camera_id=camera_id, highlight_road=True)
+                seg_result = run_oneformer_internal(camera_id=camera_id, highlight_road=True)
                 segmentation_results[camera_id] = {
                     "success": True,
                     "process_time_ms": seg_result.get("process_time_ms", 0),
