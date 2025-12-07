@@ -56,11 +56,6 @@ class CalibrationManager:
         self.images_dir = self.data_dir / "images"
         self.images_dir.mkdir(parents=True, exist_ok=True)
         
-        # 3Dオブジェクトポイント（チェッカーボードの実座標）
-        self.objp = np.zeros((pattern_size[0] * pattern_size[1], 3), np.float32)
-        self.objp[:, :2] = np.mgrid[0:pattern_size[0], 0:pattern_size[1]].T.reshape(-1, 2)
-        self.objp *= square_size
-        
         # 収集したデータ
         self._captured_data: Dict[int, List[Dict]] = {0: [], 1: []}  # camera_id -> list of data
         self._lock = threading.Lock()
@@ -74,14 +69,28 @@ class CalibrationManager:
         
         print(f"[Calibration] Initialized: pattern={pattern_size}, square_size={square_size}mm")
     
-    def detect_checkerboard(self, image: np.ndarray) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray]]:
+    def _create_object_points(self, pattern_size: Tuple[int, int]) -> np.ndarray:
+        """パターンサイズに基づいてオブジェクトポイントを生成
+        
+        Args:
+            pattern_size: (cols, rows) 内側コーナー数
+            
+        Returns:
+            3Dオブジェクトポイント
+        """
+        objp = np.zeros((pattern_size[0] * pattern_size[1], 3), np.float32)
+        objp[:, :2] = np.mgrid[0:pattern_size[0], 0:pattern_size[1]].T.reshape(-1, 2)
+        objp *= self.square_size
+        return objp
+    
+    def detect_checkerboard(self, image: np.ndarray) -> Tuple[bool, Optional[np.ndarray], Optional[np.ndarray], Optional[Tuple[int, int]]]:
         """チェッカーボードを検出
         
         Args:
             image: 入力画像 (BGR)
             
         Returns:
-            (検出成功, コーナー座標, プレビュー画像)
+            (検出成功, コーナー座標, プレビュー画像, 検出されたパターンサイズ)
         """
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
@@ -123,22 +132,21 @@ class CalibrationManager:
         
         if not ret:
             print(f"[Calibration] All detection methods failed for all pattern sizes")
-        elif detected_pattern != self.pattern_size:
+            return False, None, None, None
+        
+        if detected_pattern != self.pattern_size:
             print(f"[Calibration] WARNING: Detected with different pattern size: {detected_pattern} (expected {self.pattern_size})")
             print(f"[Calibration] Consider updating pattern_size in CalibrationManager")
         
-        if ret:
-            # サブピクセル精度で補正
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
-            corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
-            
-            # プレビュー画像作成
-            preview = image.copy()
-            cv2.drawChessboardCorners(preview, self.pattern_size, corners, ret)
-            
-            return True, corners, preview
-        else:
-            return False, None, None
+        # サブピクセル精度で補正
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
+        corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+        
+        # プレビュー画像作成
+        preview = image.copy()
+        cv2.drawChessboardCorners(preview, detected_pattern, corners, ret)
+        
+        return True, corners, preview, detected_pattern
     
     def get_detection_info(self, corners: np.ndarray, image_shape: Tuple[int, int]) -> Dict:
         """検出情報を取得
@@ -186,13 +194,15 @@ class CalibrationManager:
             }
         }
     
-    def capture_calibration_image(self, camera_id: int, image: np.ndarray, corners: np.ndarray) -> Dict:
+    def capture_calibration_image(self, camera_id: int, image: np.ndarray, 
+                                   corners: np.ndarray, pattern_size: Tuple[int, int]) -> Dict:
         """キャリブレーション用画像を保存
         
         Args:
             camera_id: カメラID
             image: 画像
             corners: 検出したコーナー座標
+            pattern_size: 検出されたパターンサイズ
             
         Returns:
             保存結果
@@ -204,38 +214,40 @@ class CalibrationManager:
             filepath = self.images_dir / filename
             cv2.imwrite(str(filepath), image)
             
-            # データを記録
+            # データを記録（パターンサイズも保存）
             data = {
                 "filename": filename,
                 "corners": corners.tolist(),
+                "pattern_size": pattern_size,  # パターンサイズを保存
                 "image_size": (image.shape[1], image.shape[0]),
                 "timestamp": timestamp
             }
             self._captured_data[camera_id].append(data)
             
             count = len(self._captured_data[camera_id])
-            print(f"[Calibration] Camera {camera_id}: captured image #{count}")
+            print(f"[Calibration] Camera {camera_id}: captured image #{count}, pattern={pattern_size}")
             
             return {
                 "camera_id": camera_id,
                 "filename": filename,
-                "count": count
+                "count": count,
+                "pattern_size": pattern_size
             }
     
     def capture_stereo_pair(self, 
-                            image0: np.ndarray, corners0: np.ndarray,
-                            image1: np.ndarray, corners1: np.ndarray) -> Dict:
+                            image0: np.ndarray, corners0: np.ndarray, pattern0: Tuple[int, int],
+                            image1: np.ndarray, corners1: np.ndarray, pattern1: Tuple[int, int]) -> Dict:
         """ステレオペアを同時保存
         
         Args:
-            image0, corners0: Camera0の画像とコーナー
-            image1, corners1: Camera1の画像とコーナー
+            image0, corners0, pattern0: Camera0の画像、コーナー、パターンサイズ
+            image1, corners1, pattern1: Camera1の画像、コーナー、パターンサイズ
             
         Returns:
             保存結果
         """
-        result0 = self.capture_calibration_image(0, image0, corners0)
-        result1 = self.capture_calibration_image(1, image1, corners1)
+        result0 = self.capture_calibration_image(0, image0, corners0, pattern0)
+        result1 = self.capture_calibration_image(1, image1, corners1, pattern1)
         
         return {
             "camera0": result0,
@@ -261,8 +273,8 @@ class CalibrationManager:
                     "stereo": self._stereo_result is not None
                 },
                 "results": {
-                    0: asdict(self._results[0]) if 0 in self._results else None,
-                    1: asdict(self._results[1]) if 1 in self._results else None,
+                    "0": asdict(self._results[0]) if 0 in self._results else None,
+                    "1": asdict(self._results[1]) if 1 in self._results else None,
                     "stereo": asdict(self._stereo_result) if self._stereo_result else None
                 }
             }
@@ -308,7 +320,13 @@ class CalibrationManager:
             image_size = None
             
             for i, data in enumerate(data_list):
-                obj_points.append(self.objp)
+                # パターンサイズを取得（保存されていない場合はデフォルト使用）
+                pattern_size = data.get("pattern_size", self.pattern_size)
+                if isinstance(pattern_size, list):
+                    pattern_size = tuple(pattern_size)
+                
+                # このパターンサイズに対応するオブジェクトポイントを生成
+                objp = self._create_object_points(pattern_size)
                 
                 # cornersの形式を確認して正しく変換
                 corners = np.array(data["corners"], dtype=np.float32)
@@ -322,15 +340,23 @@ class CalibrationManager:
                     print(f"[Calibration] WARNING: Unexpected corners shape at image {i}: {corners.shape}")
                     continue
                 
+                # コーナー数とオブジェクトポイント数が一致するか確認
+                expected_corners = pattern_size[0] * pattern_size[1]
+                if corners.shape[0] != expected_corners:
+                    print(f"[Calibration] WARNING: Image {i}: corners count mismatch: {corners.shape[0]} vs {expected_corners}")
+                    continue
+                
+                obj_points.append(objp)
                 img_points.append(corners)
                 image_size = tuple(data["image_size"])
+                
+                print(f"[Calibration] Image {i}: pattern={pattern_size}, corners={corners.shape[0]}, objp={objp.shape[0]}")
             
             if len(img_points) < 10:
-                print(f"[Calibration] Camera {camera_id}: Not enough valid images after filtering")
+                print(f"[Calibration] Camera {camera_id}: Not enough valid images after filtering ({len(img_points)} < 10)")
                 return None
             
             print(f"[Calibration] Camera {camera_id}: Calibrating with {len(img_points)} images...")
-            print(f"[Calibration] objp shape: {self.objp.shape}, first img_points shape: {img_points[0].shape}")
             
             try:
                 # キャリブレーション実行
@@ -389,7 +415,20 @@ class CalibrationManager:
             img_points1 = []
             
             for i in range(pair_count):
-                obj_points.append(self.objp)
+                # パターンサイズを取得
+                pattern0 = data0[i].get("pattern_size", self.pattern_size)
+                pattern1 = data1[i].get("pattern_size", self.pattern_size)
+                if isinstance(pattern0, list):
+                    pattern0 = tuple(pattern0)
+                if isinstance(pattern1, list):
+                    pattern1 = tuple(pattern1)
+                
+                # ステレオではパターンサイズが一致する必要がある
+                if pattern0 != pattern1:
+                    print(f"[Calibration] WARNING: Stereo pair {i} pattern mismatch: {pattern0} vs {pattern1}, skipping")
+                    continue
+                
+                objp = self._create_object_points(pattern0)
                 
                 # cornersの形式を正しく変換
                 corners0 = np.array(data0[i]["corners"], dtype=np.float32)
@@ -400,8 +439,19 @@ class CalibrationManager:
                 if corners1.ndim == 2 and corners1.shape[1] == 2:
                     corners1 = corners1.reshape(-1, 1, 2)
                 
+                # コーナー数チェック
+                expected_corners = pattern0[0] * pattern0[1]
+                if corners0.shape[0] != expected_corners or corners1.shape[0] != expected_corners:
+                    print(f"[Calibration] WARNING: Stereo pair {i} corners mismatch, skipping")
+                    continue
+                
+                obj_points.append(objp)
                 img_points0.append(corners0)
                 img_points1.append(corners1)
+            
+            if len(obj_points) < 10:
+                print(f"[Calibration] Stereo: Not enough valid pairs after filtering ({len(obj_points)} < 10)")
+                return None
             
             image_size = tuple(self._results[0].image_size)
             mtx0 = np.array(self._results[0].camera_matrix)
@@ -409,7 +459,7 @@ class CalibrationManager:
             mtx1 = np.array(self._results[1].camera_matrix)
             dist1 = np.array(self._results[1].dist_coeffs)
             
-            print(f"[Calibration] Stereo: Calibrating with {pair_count} pairs...")
+            print(f"[Calibration] Stereo: Calibrating with {len(obj_points)} pairs...")
             
             try:
                 # ステレオキャリブレーション
@@ -429,11 +479,14 @@ class CalibrationManager:
                     essential_matrix=E.tolist(),
                     fundamental_matrix=F.tolist(),
                     calibrated_at=datetime.now().isoformat(),
-                    num_images=pair_count
+                    num_images=len(obj_points)
                 )
                 
                 self._stereo_result = result
                 print(f"[Calibration] Stereo: RMS error = {ret:.4f}")
+                
+                # 結果を保存
+                self._save_results()
                 
                 return result
                 
@@ -448,22 +501,25 @@ class CalibrationManager:
         results = {}
         
         # Camera 0
-        result0 = self.calibrate_single_camera(0)
-        results["camera0"] = asdict(result0) if result0 else None
+        if len(self._captured_data[0]) >= 10:
+            result0 = self.calibrate_single_camera(0)
+            results["camera0"] = asdict(result0) if result0 else None
+        else:
+            results["camera0"] = None
         
         # Camera 1
-        result1 = self.calibrate_single_camera(1)
-        results["camera1"] = asdict(result1) if result1 else None
+        if len(self._captured_data[1]) >= 10:
+            result1 = self.calibrate_single_camera(1)
+            results["camera1"] = asdict(result1) if result1 else None
+        else:
+            results["camera1"] = None
         
-        # Stereo
-        if result0 and result1:
+        # Stereo (両方キャリブレーション済みの場合のみ)
+        if results.get("camera0") and results.get("camera1"):
             stereo = self.calibrate_stereo()
             results["stereo"] = asdict(stereo) if stereo else None
         else:
             results["stereo"] = None
-        
-        # 結果を保存
-        self._save_results()
         
         return results
     
@@ -491,10 +547,6 @@ class CalibrationManager:
         # 歪み補正
         undistorted = cv2.undistort(image, mtx, dist, None, new_mtx)
         
-        # ROIでクロップ（オプション）
-        # x, y, w, h = roi
-        # undistorted = undistorted[y:y+h, x:x+w]
-        
         return undistorted
     
     def get_capture_instruction(self) -> Dict:
@@ -502,14 +554,14 @@ class CalibrationManager:
         with self._lock:
             count0 = len(self._captured_data[0])
             count1 = len(self._captured_data[1])
-            min_count = min(count0, count1)
+            max_count = max(count0, count1)
             
-            if min_count >= 20:
+            if max_count >= 20:
                 return {
                     "status": "ready",
                     "message": "十分な画像が収集されました。キャリブレーションを実行できます。",
                     "instruction": None,
-                    "count": min_count
+                    "count": max_count
                 }
             
             # 撮影位置のガイダンス
@@ -525,13 +577,13 @@ class CalibrationManager:
                 "ランダムな位置と角度"
             ]
             
-            position = positions[min_count % len(positions)]
+            position = positions[max_count % len(positions)]
             
             return {
                 "status": "collecting",
-                "message": f"画像 {min_count + 1}/20",
+                "message": f"画像 {max_count + 1}/20",
                 "instruction": f"チェッカーボードを{position}に配置してください",
-                "count": min_count
+                "count": max_count
             }
     
     def _save_results(self):

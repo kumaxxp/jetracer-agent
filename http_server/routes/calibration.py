@@ -42,8 +42,8 @@ def detect_checkerboard(camera_id: int):
     if frame is None:
         raise HTTPException(status_code=500, detail=f"Camera {camera_id} not available")
     
-    # チェッカーボード検出
-    detected, corners, preview = calibration_manager.detect_checkerboard(frame)
+    # チェッカーボード検出（4つの戻り値）
+    detected, corners, preview, detected_pattern = calibration_manager.detect_checkerboard(frame)
     
     if detected:
         # プレビュー画像をBase64に変換
@@ -58,7 +58,8 @@ def detect_checkerboard(camera_id: int):
             "camera_id": camera_id,
             "preview_base64": preview_base64,
             "info": info,
-            "pattern_size": calibration_manager.pattern_size
+            "pattern_size": detected_pattern,
+            "expected_pattern_size": calibration_manager.pattern_size
         }
     else:
         # 元画像を返す
@@ -70,7 +71,8 @@ def detect_checkerboard(camera_id: int):
             "camera_id": camera_id,
             "preview_base64": preview_base64,
             "info": None,
-            "pattern_size": calibration_manager.pattern_size
+            "pattern_size": None,
+            "expected_pattern_size": calibration_manager.pattern_size
         }
 
 
@@ -82,14 +84,14 @@ def capture_single(camera_id: int):
     if frame is None:
         raise HTTPException(status_code=500, detail=f"Camera {camera_id} not available")
     
-    # チェッカーボード検出
-    detected, corners, _ = calibration_manager.detect_checkerboard(frame)
+    # チェッカーボード検出（4つの戻り値）
+    detected, corners, _, detected_pattern = calibration_manager.detect_checkerboard(frame)
     
     if not detected:
         raise HTTPException(status_code=400, detail="Checkerboard not detected")
     
-    # 保存
-    result = calibration_manager.capture_calibration_image(camera_id, frame, corners)
+    # 保存（パターンサイズも渡す）
+    result = calibration_manager.capture_calibration_image(camera_id, frame, corners, detected_pattern)
     
     # 次の指示を取得
     instruction = calibration_manager.get_capture_instruction()
@@ -112,9 +114,9 @@ def capture_stereo():
     if frame1 is None:
         raise HTTPException(status_code=500, detail="Camera 1 not available")
     
-    # チェッカーボード検出
-    detected0, corners0, preview0 = calibration_manager.detect_checkerboard(frame0)
-    detected1, corners1, preview1 = calibration_manager.detect_checkerboard(frame1)
+    # チェッカーボード検出（4つの戻り値）
+    detected0, corners0, preview0, pattern0 = calibration_manager.detect_checkerboard(frame0)
+    detected1, corners1, preview1, pattern1 = calibration_manager.detect_checkerboard(frame1)
     
     if not detected0 or not detected1:
         # どちらかで検出失敗した場合、プレビューを返す
@@ -136,9 +138,19 @@ def capture_stereo():
             "message": "両カメラでチェッカーボードを検出できませんでした"
         }
     
-    # 両方で検出成功 → 保存
+    # パターンサイズが一致しているか確認
+    if pattern0 != pattern1:
+        return {
+            "success": False,
+            "camera0": {"detected": True, "pattern_size": pattern0},
+            "camera1": {"detected": True, "pattern_size": pattern1},
+            "message": f"Pattern size mismatch: camera0={pattern0}, camera1={pattern1}"
+        }
+    
+    # 両方で検出成功 → 保存（パターンサイズも渡す）
     result = calibration_manager.capture_stereo_pair(
-        frame0, corners0, frame1, corners1
+        frame0, corners0, pattern0,
+        frame1, corners1, pattern1
     )
     
     # プレビュー画像を追加
