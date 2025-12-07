@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation
 from .core.camera_manager import camera_manager
 from .config import config
 
@@ -57,6 +57,7 @@ app.include_router(stream.router, tags=["stream"])
 app.include_router(oneformer.router, tags=["oneformer"])
 app.include_router(road_mapping.router, tags=["road-mapping"])
 app.include_router(calibration.router, tags=["calibration"])
+app.include_router(navigation.router, tags=["navigation"])
 
 
 @app.get("/")
@@ -83,7 +84,11 @@ def root():
             "GET  /calibration/status - キャリブレーション状態",
             "POST /calibration/detect/{id} - チェッカーボード検出",
             "POST /calibration/capture-stereo - ステレオ撮影",
-            "POST /calibration/run - キャリブレーション実行"
+            "POST /calibration/run - キャリブレーション実行",
+            "GET  /navigation/situation - 状況分析",
+            "POST /navigation/update-situation - 状況更新（セグメンテーション実行）",
+            "POST /navigation/move - 移動コマンド（モック）",
+            "GET  /navigation/status - ナビゲーション状態"
         ]
     }
 
