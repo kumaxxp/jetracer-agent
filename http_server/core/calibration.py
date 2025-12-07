@@ -99,42 +99,65 @@ class CalibrationManager:
         
         print(f"[Calibration] Detecting checkerboard: pattern_size={self.pattern_size}, image_shape={gray.shape}")
         
-        # チェッカーボード検出（複数のフラグを試す）
-        flags_list = [
-            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE,
-            cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK,
-            cv2.CALIB_CB_ADAPTIVE_THRESH,
-            0  # デフォルト
-        ]
+        # 高速検出用フラグ（最初に試す）
+        fast_flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE + cv2.CALIB_CB_FAST_CHECK
         
-        # 試すパターンサイズ（設定値 + 近いサイズ）
-        pattern_sizes_to_try = [
-            self.pattern_size,
-            (self.pattern_size[1], self.pattern_size[0]),  # 縦横逆
-            (self.pattern_size[0] + 1, self.pattern_size[1]),
-            (self.pattern_size[0], self.pattern_size[1] + 1),
-            (self.pattern_size[0] - 1, self.pattern_size[1]),
-            (self.pattern_size[0], self.pattern_size[1] - 1),
-        ]
+        # 通常検出用フラグ
+        normal_flags = cv2.CALIB_CB_ADAPTIVE_THRESH + cv2.CALIB_CB_NORMALIZE_IMAGE
         
-        ret = False
-        corners = None
-        detected_pattern = None
-        
-        for pattern in pattern_sizes_to_try:
-            if pattern[0] < 2 or pattern[1] < 2:
-                continue
-            for i, flags in enumerate(flags_list):
-                ret, corners = cv2.findChessboardCorners(gray, pattern, flags)
-                if ret:
-                    print(f"[Calibration] Detected with pattern={pattern}, flags[{i}]")
-                    detected_pattern = pattern
-                    break
+        # ステップ1: 設定されたパターンサイズで高速検出
+        ret, corners = cv2.findChessboardCorners(gray, self.pattern_size, fast_flags)
+        if ret:
+            print(f"[Calibration] Fast detection succeeded with pattern={self.pattern_size}")
+            detected_pattern = self.pattern_size
+        else:
+            # ステップ2: 縦横逆で試す
+            reversed_pattern = (self.pattern_size[1], self.pattern_size[0])
+            ret, corners = cv2.findChessboardCorners(gray, reversed_pattern, fast_flags)
             if ret:
-                break
+                print(f"[Calibration] Fast detection succeeded with reversed pattern={reversed_pattern}")
+                detected_pattern = reversed_pattern
+            else:
+                # ステップ3: 設定されたパターンサイズで通常検出（FAST_CHECKなし）
+                ret, corners = cv2.findChessboardCorners(gray, self.pattern_size, normal_flags)
+                if ret:
+                    print(f"[Calibration] Normal detection succeeded with pattern={self.pattern_size}")
+                    detected_pattern = self.pattern_size
+                else:
+                    # ステップ4: 縦横逆で通常検出
+                    ret, corners = cv2.findChessboardCorners(gray, reversed_pattern, normal_flags)
+                    if ret:
+                        print(f"[Calibration] Normal detection succeeded with reversed pattern={reversed_pattern}")
+                        detected_pattern = reversed_pattern
         
         if not ret:
-            print(f"[Calibration] All detection methods failed for all pattern sizes")
+            print(f"[Calibration] Primary detection failed, trying alternative patterns...")
+            
+            # 代替パターンを試す（最小限に）
+            alt_patterns = [
+                (self.pattern_size[0] - 1, self.pattern_size[1]),
+                (self.pattern_size[0], self.pattern_size[1] - 1),
+                (self.pattern_size[0] + 1, self.pattern_size[1]),
+                (self.pattern_size[0], self.pattern_size[1] + 1),
+            ]
+            
+            for pattern in alt_patterns:
+                if pattern[0] < 3 or pattern[1] < 3:
+                    continue
+                ret, corners = cv2.findChessboardCorners(gray, pattern, fast_flags)
+                if ret:
+                    print(f"[Calibration] Alternative pattern detected: {pattern}")
+                    detected_pattern = pattern
+                    break
+        
+        if not ret:
+            print(f"[Calibration] All detection methods failed")
+            
+            # デバッグ用: 検出失敗画像を保存
+            debug_path = self.data_dir / "debug_failed_detection.jpg"
+            cv2.imwrite(str(debug_path), image)
+            print(f"[Calibration] Saved failed detection image to: {debug_path}")
+            
             return False, None, None, None
         
         if detected_pattern != self.pattern_size:
