@@ -617,8 +617,10 @@ class CalibrationManager:
         dist = np.array(result.dist_coeffs)
         
         # 最適カメラ行列を計算
+        # alpha=0: 黒い領域なし（クロップ）
+        # alpha=1: 全ピクセル保持（黒い領域が大きい）
         h, w = image.shape[:2]
-        new_mtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+        new_mtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 0, (w, h))  # alpha=0
         
         # 歪み補正
         undistorted = cv2.undistort(image, mtx, dist, None, new_mtx)

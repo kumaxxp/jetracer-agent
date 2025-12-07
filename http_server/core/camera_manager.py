@@ -342,8 +342,10 @@ class MultiCameraManager:
         w, h = image_size
         
         # 最適カメラ行列を事前計算
+        # alpha=0: 黒い領域なし（クロップ）
+        # alpha=1: 全ピクセル保持（黒い領域が大きい）
         new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
-            camera_matrix, dist_coeffs, (w, h), 1, (w, h)
+            camera_matrix, dist_coeffs, (w, h), 0, (w, h)  # alpha=0 に変更
         )
         
         self._calibration_data[camera_id] = {
@@ -354,7 +356,7 @@ class MultiCameraManager:
             "image_size": (w, h)
         }
         
-        print(f"[CameraManager] Camera {camera_id}: Calibration data set ({w}x{h})")
+        print(f"[CameraManager] Camera {camera_id}: Calibration data set ({w}x{h}), ROI={roi}")
     
     def load_calibration_from_manager(self):
         """CalibrationManagerからキャリブレーションデータを読み込み"""
