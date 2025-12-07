@@ -41,7 +41,12 @@ def analyze_road_distribution(seg_mask: np.ndarray, road_label_ids: Set[int]) ->
     # 全体のROAD比率
     total_road_ratio = float(road_mask.sum() / road_mask.size)
     
-    # 左/中央/右の分割（3等分）
+    # グリッド分析（3行 x 3列）
+    # 行: far(遠方), mid(中間), near(足元)
+    # 列: left, center, right
+    grid = analyze_road_grid(road_mask, rows=3, cols=3)
+    
+    # 左/中央/右の分割（3等分）- 従来互換用
     left_region = road_mask[:, :w//3]
     center_region = road_mask[:, w//3:2*w//3]
     right_region = road_mask[:, 2*w//3:]
@@ -58,7 +63,8 @@ def analyze_road_distribution(seg_mask: np.ndarray, road_label_ids: Set[int]) ->
     bottom_ratio = float(bottom_region.sum() / bottom_region.size)
     
     # 前方に壁があるか（上部のROAD比率が低い場合）
-    wall_ahead = bool(top_ratio < 0.2)
+    # 閾値: 50%未満なら前方に障害物があると判定
+    wall_ahead = bool(top_ratio < 0.5)
     
     # 左右の境界検出（端にROADがない場合）
     left_edge = road_mask[:, :w//10]  # 左端10%
@@ -75,6 +81,9 @@ def analyze_road_distribution(seg_mask: np.ndarray, road_label_ids: Set[int]) ->
     else:
         dominant_direction = "right"
     
+    # 走行可能パスの判定
+    path_analysis = analyze_path(grid)
+    
     return {
         "road_ratio": {
             "left": round(left_ratio, 3),
@@ -84,6 +93,8 @@ def analyze_road_distribution(seg_mask: np.ndarray, road_label_ids: Set[int]) ->
             "top": round(top_ratio, 3),
             "bottom": round(bottom_ratio, 3)
         },
+        "grid": grid,  # 3x3グリッド
+        "path": path_analysis,  # 走行可能パス
         "wall_ahead": wall_ahead,
         "boundary": {
             "left": left_boundary,
@@ -93,33 +104,164 @@ def analyze_road_distribution(seg_mask: np.ndarray, road_label_ids: Set[int]) ->
     }
 
 
+def analyze_road_grid(road_mask: np.ndarray, rows: int = 3, cols: int = 3) -> dict:
+    """
+    グリッドベースのROAD分析
+    
+    3x3グリッド:
+    - 行: far(遠方/上), mid(中間), near(足元/下)
+    - 列: left, center, right
+    
+    Returns:
+        {"far": {"left": 0.1, "center": 0.3, "right": 0.1},
+         "mid": {"left": 0.4, "center": 0.8, "right": 0.5},
+         "near": {"left": 0.7, "center": 0.9, "right": 0.8}}
+    """
+    h, w = road_mask.shape
+    row_height = h // rows
+    col_width = w // cols
+    
+    row_names = ["far", "mid", "near"]
+    col_names = ["left", "center", "right"]
+    
+    grid = {}
+    for r, row_name in enumerate(row_names):
+        row_data = {}
+        for c, col_name in enumerate(col_names):
+            y1, y2 = r * row_height, (r + 1) * row_height
+            x1, x2 = c * col_width, (c + 1) * col_width
+            
+            cell = road_mask[y1:y2, x1:x2]
+            ratio = float(cell.sum() / cell.size)
+            row_data[col_name] = round(ratio, 2)
+        grid[row_name] = row_data
+    
+    return grid
+
+
+def analyze_path(grid: dict) -> dict:
+    """
+    グリッドから走行可能パスを分析
+    
+    Returns:
+        {"can_go_straight": True/False,
+         "can_go_left": True/False,
+         "can_go_right": True/False,
+         "best_direction": "center"/"left"/"right"/"none",
+         "recommended_action": "forward"/"turn_left"/"turn_right"/"stop"}
+    """
+    # 閾値: 40%以上のROADがあれば通行可能
+    THRESHOLD = 0.4
+    
+    # 各方向の通行可能性を判定
+    # 直進: far-centerとmid-centerが両方通行可能
+    can_go_straight = (
+        grid["far"]["center"] >= THRESHOLD and 
+        grid["mid"]["center"] >= THRESHOLD
+    )
+    
+    # 左折: far-leftとmid-leftが通行可能
+    can_go_left = (
+        grid["far"]["left"] >= THRESHOLD and 
+        grid["mid"]["left"] >= THRESHOLD
+    )
+    
+    # 右折: far-rightとmid-rightが通行可能
+    can_go_right = (
+        grid["far"]["right"] >= THRESHOLD and 
+        grid["mid"]["right"] >= THRESHOLD
+    )
+    
+    # 最適方向の決定
+    directions = {
+        "center": grid["far"]["center"] + grid["mid"]["center"],
+        "left": grid["far"]["left"] + grid["mid"]["left"],
+        "right": grid["far"]["right"] + grid["mid"]["right"]
+    }
+    
+    best_direction = max(directions, key=directions.get)
+    best_score = directions[best_direction]
+    
+    # 推奨アクション
+    if best_score < THRESHOLD * 2:  # どの方向も通行困難
+        recommended_action = "stop"
+        best_direction = "none"
+    elif can_go_straight and best_direction == "center":
+        recommended_action = "forward"
+    elif can_go_left and best_direction == "left":
+        recommended_action = "turn_left"
+    elif can_go_right and best_direction == "right":
+        recommended_action = "turn_right"
+    elif can_go_straight:
+        recommended_action = "forward"
+    elif can_go_left:
+        recommended_action = "turn_left"
+    elif can_go_right:
+        recommended_action = "turn_right"
+    else:
+        recommended_action = "stop"
+        best_direction = "none"
+    
+    return {
+        "can_go_straight": can_go_straight,
+        "can_go_left": can_go_left,
+        "can_go_right": can_go_right,
+        "best_direction": best_direction,
+        "recommended_action": recommended_action
+    }
+
+
 def generate_description(analysis: dict, camera_name: str) -> str:
     """分析結果から説明文を生成"""
     parts = []
     
+    grid = analysis.get("grid", {})
+    path = analysis.get("path", {})
     road = analysis["road_ratio"]
     
-    if analysis["wall_ahead"]:
-        parts.append("前方に壁または障害物")
+    # パス分析に基づく説明
+    if path:
+        action = path.get("recommended_action", "stop")
+        if action == "forward":
+            parts.append("前進可能")
+        elif action == "turn_left":
+            parts.append("左折推奨")
+        elif action == "turn_right":
+            parts.append("右折推奨")
+        elif action == "stop":
+            parts.append("停止推奨")
+        
+        # 通行可能方向の詳細
+        directions = []
+        if path.get("can_go_straight"):
+            directions.append("直進○")
+        else:
+            directions.append("直進×")
+        if path.get("can_go_left"):
+            directions.append("左○")
+        else:
+            directions.append("左×")
+        if path.get("can_go_right"):
+            directions.append("右○")
+        else:
+            directions.append("右×")
+        parts.append(f"[{' '.join(directions)}]")
     
-    # 道の状況
-    if road["center"] > 0.6:
-        parts.append("中央に広い道")
-    elif road["center"] > 0.3:
-        parts.append("中央に道あり")
-    elif road["center"] < 0.1:
-        parts.append("中央は通行不可")
-    
-    if road["left"] > road["right"] + 0.2:
-        parts.append("左側に道が開けている")
-    elif road["right"] > road["left"] + 0.2:
-        parts.append("右側に道が開けている")
+    # グリッド情報
+    if grid:
+        far = grid.get("far", {})
+        # 遠方の状況
+        far_center = far.get("center", 0)
+        if far_center < 0.2:
+            parts.append("前方障害物")
+        elif far_center >= 0.6:
+            parts.append("前方開けている")
     
     # 境界
     if analysis["boundary"]["left"]:
-        parts.append("左に壁境界")
+        parts.append("左壁")
     if analysis["boundary"]["right"]:
-        parts.append("右に壁境界")
+        parts.append("右壁")
     
     if not parts:
         parts.append("通常の道")
@@ -167,6 +309,18 @@ def get_situation():
         result["front_camera"] = {
             "error": "No segmentation data. Run /oneformer/0 first.",
             "road_ratio": {"left": 0, "center": 0, "right": 0, "total": 0, "top": 0, "bottom": 0},
+            "grid": {
+                "far": {"left": 0, "center": 0, "right": 0},
+                "mid": {"left": 0, "center": 0, "right": 0},
+                "near": {"left": 0, "center": 0, "right": 0}
+            },
+            "path": {
+                "can_go_straight": False,
+                "can_go_left": False,
+                "can_go_right": False,
+                "best_direction": "none",
+                "recommended_action": "stop"
+            },
             "wall_ahead": True,
             "boundary": {"left": False, "right": False},
             "dominant_direction": "unknown",
@@ -184,7 +338,19 @@ def get_situation():
         result["ground_camera"] = {
             "error": "No segmentation data. Run /oneformer/1 first.",
             "road_ratio": {"left": 0, "center": 0, "right": 0, "total": 0, "top": 0, "bottom": 0},
-            "wall_ahead": False,
+            "grid": {
+                "far": {"left": 0, "center": 0, "right": 0},
+                "mid": {"left": 0, "center": 0, "right": 0},
+                "near": {"left": 0, "center": 0, "right": 0}
+            },
+            "path": {
+                "can_go_straight": False,
+                "can_go_left": False,
+                "can_go_right": False,
+                "best_direction": "none",
+                "recommended_action": "stop"
+            },
+            "wall_ahead": True,
             "boundary": {"left": False, "right": False},
             "dominant_direction": "unknown",
             "description": "セグメンテーション未実行"
