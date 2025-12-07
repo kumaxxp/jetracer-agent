@@ -38,7 +38,7 @@ class CalibrationManager:
     """キャリブレーション管理"""
     
     def __init__(self, 
-                 pattern_size: Tuple[int, int] = (10, 8),  # 内側コーナー数 (11×9マス: 白6黒5 × 白5黒4)
+                 pattern_size: Tuple[int, int] = (10, 7),  # 内側コーナー数 (11×8マス)
                  square_size: float = 23.0,  # mm
                  data_dir: str = "calibration_data"):
         """
