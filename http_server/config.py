@@ -8,11 +8,11 @@ class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 8000
 
-    # カメラ設定
-    camera_width: int = 320
-    camera_height: int = 240
+    # カメラ設定（キャリブレーション精度向上のため640x480に変更）
+    camera_width: int = 640
+    camera_height: int = 480
     camera_fps: int = 10
-    jpeg_quality: int = 70  # 小さい解像度なので圧縮率を上げて転送を高速化
+    jpeg_quality: int = 75
 
     # モデルパス
     yolo_model_path: str = "/home/jetson/models/yolov8n.pt"

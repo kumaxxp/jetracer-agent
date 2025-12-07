@@ -14,6 +14,62 @@ from ..core.camera_manager import camera_manager
 router = APIRouter(prefix="/calibration", tags=["calibration"])
 
 
+# キャリブレーション用高解像度設定
+CALIB_WIDTH = 640
+CALIB_HEIGHT = 480
+
+
+def get_high_res_frame(camera_id: int) -> Optional[np.ndarray]:
+    """キャリブレーション用に高解像度フレームを取得
+    
+    方法1: 通常のカメラから取得し、1280x720 -> 640x480 にリサイズ
+    方法2: カメラが使用中の場合は既存フレームを拡大
+    """
+    try:
+        # まず既存のカメラマネージャーからフレームを取得
+        frame = camera_manager.read_raw(camera_id)
+        if frame is not None:
+            # 元のサイズが640x480未満なら拡大
+            h, w = frame.shape[:2]
+            if w < CALIB_WIDTH or h < CALIB_HEIGHT:
+                frame = cv2.resize(frame, (CALIB_WIDTH, CALIB_HEIGHT), interpolation=cv2.INTER_LINEAR)
+                print(f"[Calibration] Upscaled frame: {w}x{h} -> {CALIB_WIDTH}x{CALIB_HEIGHT}")
+            elif w > CALIB_WIDTH or h > CALIB_HEIGHT:
+                frame = cv2.resize(frame, (CALIB_WIDTH, CALIB_HEIGHT))
+                print(f"[Calibration] Downscaled frame: {w}x{h} -> {CALIB_WIDTH}x{CALIB_HEIGHT}")
+            else:
+                print(f"[Calibration] Frame size OK: {w}x{h}")
+            return frame
+        
+        print(f"[Calibration] camera_manager.read_raw returned None, trying direct capture")
+        
+        # フォールバック: 直接カメラを開く（既存のカメラが停止している場合）
+        cap = cv2.VideoCapture(camera_id)
+        if not cap.isOpened():
+            print(f"[Calibration] Failed to open camera {camera_id}")
+            return None
+        
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        
+        for _ in range(3):
+            ret, frame = cap.read()
+        
+        cap.release()
+        
+        if not ret or frame is None:
+            return None
+        
+        frame = cv2.resize(frame, (CALIB_WIDTH, CALIB_HEIGHT))
+        print(f"[Calibration] Got direct capture frame: {frame.shape}")
+        return frame
+        
+    except Exception as e:
+        print(f"[Calibration] High-res capture error: {e}")
+        return None
+
+
 class PositionRequest(BaseModel):
     x: float
     y: float
