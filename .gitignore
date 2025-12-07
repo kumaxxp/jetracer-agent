@@ -57,4 +57,6 @@ htmlcov/
 # Temporary files
 tmp/
 calibration_data/images/
-calibration_data/
+test_success_0.jpg
+test_success_0.png
+calibration_data/debug_failed_detection.jpg
