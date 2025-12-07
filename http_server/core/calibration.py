@@ -307,32 +307,60 @@ class CalibrationManager:
             img_points = []
             image_size = None
             
-            for data in data_list:
+            for i, data in enumerate(data_list):
                 obj_points.append(self.objp)
-                img_points.append(np.array(data["corners"], dtype=np.float32))
+                
+                # cornersの形式を確認して正しく変換
+                corners = np.array(data["corners"], dtype=np.float32)
+                
+                # 形式が(N, 2)の場合は(N, 1, 2)に変換
+                if corners.ndim == 2 and corners.shape[1] == 2:
+                    corners = corners.reshape(-1, 1, 2)
+                elif corners.ndim == 3 and corners.shape[1] == 1 and corners.shape[2] == 2:
+                    pass  # 正しい形式
+                else:
+                    print(f"[Calibration] WARNING: Unexpected corners shape at image {i}: {corners.shape}")
+                    continue
+                
+                img_points.append(corners)
                 image_size = tuple(data["image_size"])
             
-            print(f"[Calibration] Camera {camera_id}: Calibrating with {len(data_list)} images...")
+            if len(img_points) < 10:
+                print(f"[Calibration] Camera {camera_id}: Not enough valid images after filtering")
+                return None
             
-            # キャリブレーション実行
-            ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
-                obj_points, img_points, image_size, None, None
-            )
+            print(f"[Calibration] Camera {camera_id}: Calibrating with {len(img_points)} images...")
+            print(f"[Calibration] objp shape: {self.objp.shape}, first img_points shape: {img_points[0].shape}")
             
-            result = CalibrationResult(
-                camera_id=camera_id,
-                rms_error=ret,
-                camera_matrix=mtx.tolist(),
-                dist_coeffs=dist.flatten().tolist(),
-                image_size=image_size,
-                calibrated_at=datetime.now().isoformat(),
-                num_images=len(data_list)
-            )
-            
-            self._results[camera_id] = result
-            print(f"[Calibration] Camera {camera_id}: RMS error = {ret:.4f}")
-            
-            return result
+            try:
+                # キャリブレーション実行
+                ret, mtx, dist, rvecs, tvecs = cv2.calibrateCamera(
+                    obj_points, img_points, image_size, None, None
+                )
+                
+                result = CalibrationResult(
+                    camera_id=camera_id,
+                    rms_error=ret,
+                    camera_matrix=mtx.tolist(),
+                    dist_coeffs=dist.flatten().tolist(),
+                    image_size=image_size,
+                    calibrated_at=datetime.now().isoformat(),
+                    num_images=len(img_points)
+                )
+                
+                self._results[camera_id] = result
+                print(f"[Calibration] Camera {camera_id}: RMS error = {ret:.4f}")
+                
+                # 結果を保存
+                self._save_results()
+                
+                return result
+                
+            except Exception as e:
+                print(f"[Calibration] Camera {camera_id}: Calibration failed with error: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
     
     def calibrate_stereo(self) -> Optional[StereoCalibrationResult]:
         """ステレオキャリブレーション
@@ -362,8 +390,18 @@ class CalibrationManager:
             
             for i in range(pair_count):
                 obj_points.append(self.objp)
-                img_points0.append(np.array(data0[i]["corners"], dtype=np.float32))
-                img_points1.append(np.array(data1[i]["corners"], dtype=np.float32))
+                
+                # cornersの形式を正しく変換
+                corners0 = np.array(data0[i]["corners"], dtype=np.float32)
+                corners1 = np.array(data1[i]["corners"], dtype=np.float32)
+                
+                if corners0.ndim == 2 and corners0.shape[1] == 2:
+                    corners0 = corners0.reshape(-1, 1, 2)
+                if corners1.ndim == 2 and corners1.shape[1] == 2:
+                    corners1 = corners1.reshape(-1, 1, 2)
+                
+                img_points0.append(corners0)
+                img_points1.append(corners1)
             
             image_size = tuple(self._results[0].image_size)
             mtx0 = np.array(self._results[0].camera_matrix)
@@ -373,30 +411,37 @@ class CalibrationManager:
             
             print(f"[Calibration] Stereo: Calibrating with {pair_count} pairs...")
             
-            # ステレオキャリブレーション
-            flags = cv2.CALIB_FIX_INTRINSIC
-            criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)
-            
-            ret, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
-                obj_points, img_points0, img_points1,
-                mtx0, dist0, mtx1, dist1,
-                image_size, criteria=criteria, flags=flags
-            )
-            
-            result = StereoCalibrationResult(
-                rms_error=ret,
-                rotation_matrix=R.tolist(),
-                translation_vector=T.flatten().tolist(),
-                essential_matrix=E.tolist(),
-                fundamental_matrix=F.tolist(),
-                calibrated_at=datetime.now().isoformat(),
-                num_images=pair_count
-            )
-            
-            self._stereo_result = result
-            print(f"[Calibration] Stereo: RMS error = {ret:.4f}")
-            
-            return result
+            try:
+                # ステレオキャリブレーション
+                flags = cv2.CALIB_FIX_INTRINSIC
+                criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5)
+                
+                ret, _, _, _, _, R, T, E, F = cv2.stereoCalibrate(
+                    obj_points, img_points0, img_points1,
+                    mtx0, dist0, mtx1, dist1,
+                    image_size, criteria=criteria, flags=flags
+                )
+                
+                result = StereoCalibrationResult(
+                    rms_error=ret,
+                    rotation_matrix=R.tolist(),
+                    translation_vector=T.flatten().tolist(),
+                    essential_matrix=E.tolist(),
+                    fundamental_matrix=F.tolist(),
+                    calibrated_at=datetime.now().isoformat(),
+                    num_images=pair_count
+                )
+                
+                self._stereo_result = result
+                print(f"[Calibration] Stereo: RMS error = {ret:.4f}")
+                
+                return result
+                
+            except Exception as e:
+                print(f"[Calibration] Stereo: Calibration failed with error: {e}")
+                import traceback
+                traceback.print_exc()
+                return None
     
     def run_full_calibration(self) -> Dict:
         """フルキャリブレーション実行（単カメラ + ステレオ）"""

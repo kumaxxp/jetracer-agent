@@ -158,51 +158,63 @@ def capture_stereo():
 @router.post("/run")
 def run_calibration():
     """キャリブレーションを実行"""
-    status = calibration_manager.get_status()
-    
-    # 画像数チェック
-    min_images = min(
-        status["captured_images"][0],
-        status["captured_images"][1]
-    )
-    
-    if min_images < 10:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Not enough images: {min_images} < 10 required"
-        )
-    
-    # キャリブレーション実行
-    results = calibration_manager.run_full_calibration()
-    
-    return {
-        "success": True,
-        "results": results
-    }
+    try:
+        status = calibration_manager.get_status()
+        
+        # 画像数チェック
+        cam0_count = status["captured_images"].get(0, 0)
+        cam1_count = status["captured_images"].get(1, 0)
+        
+        if cam0_count < 10 and cam1_count < 10:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Not enough images: camera0={cam0_count}, camera1={cam1_count} (need 10+)"
+            )
+        
+        # キャリブレーション実行
+        results = calibration_manager.run_full_calibration()
+        
+        return {
+            "success": True,
+            "results": results
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/run/{camera_id}")
 def run_single_calibration(camera_id: int):
     """単一カメラのキャリブレーションを実行"""
-    status = calibration_manager.get_status()
-    
-    if status["captured_images"][camera_id] < 10:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Not enough images for camera {camera_id}"
-        )
-    
-    result = calibration_manager.calibrate_single_camera(camera_id)
-    
-    if result is None:
-        raise HTTPException(status_code=500, detail="Calibration failed")
-    
-    return {
-        "success": True,
-        "camera_id": camera_id,
-        "rms_error": result.rms_error,
-        "num_images": result.num_images
-    }
+    try:
+        status = calibration_manager.get_status()
+        
+        if status["captured_images"][camera_id] < 10:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough images for camera {camera_id}: {status['captured_images'][camera_id]} < 10"
+            )
+        
+        result = calibration_manager.calibrate_single_camera(camera_id)
+        
+        if result is None:
+            raise HTTPException(status_code=500, detail="Calibration failed - check server logs")
+        
+        return {
+            "success": True,
+            "camera_id": camera_id,
+            "rms_error": result.rms_error,
+            "num_images": result.num_images
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/result")
