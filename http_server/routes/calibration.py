@@ -85,6 +85,8 @@ def get_calibration_status():
 def detect_checkerboard(camera_id: int):
     """チェッカーボードを検出
     
+    複数フレームを試して検出率を向上させる
+    
     Args:
         camera_id: カメラID (0 or 1)
         
@@ -93,46 +95,72 @@ def detect_checkerboard(camera_id: int):
         preview_base64: コーナー描画済み画像（Base64）
         info: 検出情報（位置、カバレッジなど）
     """
-    # フレーム取得
-    frame = camera_manager.read(camera_id)
-    if frame is None:
-        raise HTTPException(status_code=500, detail=f"Camera {camera_id} not available")
+    import time
     
-    # チェッカーボード検出（4つの戻り値）
-    detected, corners, preview, detected_pattern = calibration_manager.detect_checkerboard(frame)
+    MAX_ATTEMPTS = 10  # 最大試行回数
+    FRAME_INTERVAL = 0.1  # フレーム間隔（秒）
     
-    if detected:
-        # 検出結果を保持（Capture用）
-        calibration_manager.store_detection(camera_id, frame, corners, detected_pattern)
+    last_frame = None
+    
+    for attempt in range(MAX_ATTEMPTS):
+        # フレーム取得
+        frame = camera_manager.read_raw(camera_id)  # 歪み補正なしで取得
+        if frame is None:
+            if attempt == MAX_ATTEMPTS - 1:
+                raise HTTPException(status_code=500, detail=f"Camera {camera_id} not available")
+            time.sleep(FRAME_INTERVAL)
+            continue
         
-        # プレビュー画像をBase64に変換
-        _, buffer = cv2.imencode('.jpg', preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        last_frame = frame.copy()
+        
+        # チェッカーボード検出
+        detected, corners, preview, detected_pattern = calibration_manager.detect_checkerboard(frame)
+        
+        if detected:
+            print(f"[Calibration] Camera {camera_id}: Detected on attempt {attempt + 1}/{MAX_ATTEMPTS}")
+            
+            # 検出結果を保持（Capture用）
+            calibration_manager.store_detection(camera_id, frame, corners, detected_pattern)
+            
+            # プレビュー画像をBase64に変換
+            _, buffer = cv2.imencode('.jpg', preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            preview_base64 = base64.b64encode(buffer).decode('utf-8')
+            
+            # 検出情報
+            info = calibration_manager.get_detection_info(corners, frame.shape)
+            
+            return {
+                "detected": True,
+                "camera_id": camera_id,
+                "preview_base64": preview_base64,
+                "info": info,
+                "pattern_size": detected_pattern,
+                "expected_pattern_size": calibration_manager.pattern_size,
+                "attempts": attempt + 1
+            }
+        
+        # 次のフレームまで待機
+        time.sleep(FRAME_INTERVAL)
+    
+    # 全ての試行で失敗
+    print(f"[Calibration] Camera {camera_id}: Detection failed after {MAX_ATTEMPTS} attempts")
+    
+    # 最後のフレームを返す
+    if last_frame is not None:
+        _, buffer = cv2.imencode('.jpg', last_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         preview_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        # 検出情報
-        info = calibration_manager.get_detection_info(corners, frame.shape)
-        
-        return {
-            "detected": True,
-            "camera_id": camera_id,
-            "preview_base64": preview_base64,
-            "info": info,
-            "pattern_size": detected_pattern,
-            "expected_pattern_size": calibration_manager.pattern_size
-        }
     else:
-        # 元画像を返す
-        _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-        preview_base64 = base64.b64encode(buffer).decode('utf-8')
-        
-        return {
-            "detected": False,
-            "camera_id": camera_id,
-            "preview_base64": preview_base64,
-            "info": None,
-            "pattern_size": None,
-            "expected_pattern_size": calibration_manager.pattern_size
-        }
+        preview_base64 = None
+    
+    return {
+        "detected": False,
+        "camera_id": camera_id,
+        "preview_base64": preview_base64,
+        "info": None,
+        "pattern_size": None,
+        "expected_pattern_size": calibration_manager.pattern_size,
+        "attempts": MAX_ATTEMPTS
+    }
 
 
 @router.post("/capture/{camera_id}")
