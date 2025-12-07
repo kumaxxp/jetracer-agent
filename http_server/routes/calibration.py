@@ -3,6 +3,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Optional
+from dataclasses import asdict
 import cv2
 import base64
 import numpy as np
@@ -274,7 +275,7 @@ def capture_stereo():
 
 @router.post("/run")
 def run_calibration():
-    """キャリブレーションを実行"""
+    """キャリブレーションを実行（単体のみ、ステレオは含まない）"""
     try:
         status = calibration_manager.get_status()
         
@@ -288,12 +289,71 @@ def run_calibration():
                 detail=f"Not enough images: camera0={cam0_count}, camera1={cam1_count} (need 10+)"
             )
         
-        # キャリブレーション実行
-        results = calibration_manager.run_full_calibration()
+        # 単体キャリブレーションのみ実行（ステレオは別エンドポイント）
+        results = {}
+        
+        if cam0_count >= 10:
+            result0 = calibration_manager.calibrate_single_camera(0)
+            results["camera0"] = asdict(result0) if result0 else None
+        else:
+            results["camera0"] = None
+        
+        if cam1_count >= 10:
+            result1 = calibration_manager.calibrate_single_camera(1)
+            results["camera1"] = asdict(result1) if result1 else None
+        else:
+            results["camera1"] = None
+        
+        results["stereo"] = None  # ステレオは別途実行
         
         return {
             "success": True,
             "results": results
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/run-stereo")
+def run_stereo_calibration():
+    """ステレオキャリブレーションのみ実行（既存の単体キャリブレーション結果を使用）"""
+    try:
+        # 両カメラのキャリブレーション結果が必要
+        if not calibration_manager.is_calibrated(0) or not calibration_manager.is_calibrated(1):
+            raise HTTPException(
+                status_code=400,
+                detail="Both cameras must be calibrated first. Run single camera calibration."
+            )
+        
+        status = calibration_manager.get_status()
+        cam0_count = status["captured_images"].get(0, 0)
+        cam1_count = status["captured_images"].get(1, 0)
+        pair_count = min(cam0_count, cam1_count)
+        
+        if pair_count < 10:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Not enough stereo pairs: {pair_count} < 10. Capture more stereo pairs."
+            )
+        
+        # ステレオキャリブレーションのみ実行
+        stereo_result = calibration_manager.calibrate_stereo()
+        
+        if stereo_result is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Stereo calibration failed. Check server logs."
+            )
+        
+        return {
+            "success": True,
+            "rms_error": stereo_result.rms_error,
+            "translation_vector": stereo_result.translation_vector,
+            "num_images": stereo_result.num_images
         }
     except HTTPException:
         raise
