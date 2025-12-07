@@ -137,15 +137,6 @@ def get_situation():
     """
     start_time = time.time()
     
-    # ROADラベルIDを取得
-    try:
-        road_label_ids = get_road_label_ids_from_segmenter()
-    except Exception as e:
-        raise HTTPException(
-            status_code=503,
-            detail=f"Failed to get road labels: {e}"
-        )
-    
     result = {
         "timestamp": datetime.now().isoformat(),
         "front_camera": None,
@@ -153,6 +144,17 @@ def get_situation():
         "summary": "",
         "process_time_ms": 0
     }
+    
+    # セグメンテーションデータがある場合のみROADラベルIDを取得
+    has_any_segmentation = 0 in _latest_seg_masks or 1 in _latest_seg_masks
+    
+    road_label_ids = set()
+    if has_any_segmentation:
+        try:
+            road_label_ids = get_road_label_ids_from_segmenter()
+        except Exception as e:
+            print(f"[Navigation] Failed to get road labels: {e}")
+            # エラーでも継続（空のroad_label_idsで）
     
     # 正面カメラ (camera_id=0)
     if 0 in _latest_seg_masks:
@@ -164,7 +166,7 @@ def get_situation():
     else:
         result["front_camera"] = {
             "error": "No segmentation data. Run /oneformer/0 first.",
-            "road_ratio": {"left": 0, "center": 0, "right": 0, "total": 0},
+            "road_ratio": {"left": 0, "center": 0, "right": 0, "total": 0, "top": 0, "bottom": 0},
             "wall_ahead": True,
             "boundary": {"left": False, "right": False},
             "dominant_direction": "unknown",
@@ -181,7 +183,7 @@ def get_situation():
     else:
         result["ground_camera"] = {
             "error": "No segmentation data. Run /oneformer/1 first.",
-            "road_ratio": {"left": 0, "center": 0, "right": 0, "total": 0},
+            "road_ratio": {"left": 0, "center": 0, "right": 0, "total": 0, "top": 0, "bottom": 0},
             "wall_ahead": False,
             "boundary": {"left": False, "right": False},
             "dominant_direction": "unknown",
@@ -217,25 +219,49 @@ def update_situation(run_segmentation: bool = True):
         # 両カメラでセグメンテーション実行
         for camera_id in [0, 1]:
             try:
+                print(f"[Navigation] Running segmentation for camera {camera_id}...")
                 seg_result = run_oneformer(camera_id=camera_id, highlight_road=True)
                 segmentation_results[camera_id] = {
                     "success": True,
                     "process_time_ms": seg_result.get("process_time_ms", 0),
                     "num_classes": seg_result.get("num_classes", 0)
                 }
+                print(f"[Navigation] Camera {camera_id} segmentation done: {seg_result.get('process_time_ms', 0):.0f}ms")
             except HTTPException as e:
+                print(f"[Navigation] Camera {camera_id} HTTPException: {e.detail}")
                 segmentation_results[camera_id] = {
                     "success": False,
                     "error": e.detail
                 }
             except Exception as e:
+                print(f"[Navigation] Camera {camera_id} Exception: {e}")
+                import traceback
+                traceback.print_exc()
                 segmentation_results[camera_id] = {
                     "success": False,
                     "error": str(e)
                 }
     
     # 状況取得
-    situation = get_situation()
+    try:
+        situation = get_situation()
+    except HTTPException as e:
+        situation = {
+            "error": e.detail,
+            "front_camera": None,
+            "ground_camera": None,
+            "summary": f"エラー: {e.detail}"
+        }
+    except Exception as e:
+        print(f"[Navigation] get_situation Exception: {e}")
+        import traceback
+        traceback.print_exc()
+        situation = {
+            "error": str(e),
+            "front_camera": None,
+            "ground_camera": None,
+            "summary": f"エラー: {e}"
+        }
     
     return {
         "segmentation": segmentation_results,
