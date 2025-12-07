@@ -60,6 +60,9 @@ class CalibrationManager:
         self._captured_data: Dict[int, List[Dict]] = {0: [], 1: []}  # camera_id -> list of data
         self._lock = threading.Lock()
         
+        # 最新の検出結果を保持（Capture時に使用）
+        self._last_detection: Dict[int, Dict] = {}  # camera_id -> {frame, corners, pattern_size, timestamp}
+        
         # キャリブレーション結果
         self._results: Dict[int, CalibrationResult] = {}
         self._stereo_result: Optional[StereoCalibrationResult] = None
@@ -147,6 +150,56 @@ class CalibrationManager:
         cv2.drawChessboardCorners(preview, detected_pattern, corners, ret)
         
         return True, corners, preview, detected_pattern
+    
+    def store_detection(self, camera_id: int, frame: np.ndarray, 
+                        corners: np.ndarray, pattern_size: Tuple[int, int]):
+        """Capture用に検出結果を保持
+        
+        Args:
+            camera_id: カメラID
+            frame: フレーム
+            corners: コーナー座標
+            pattern_size: 検出されたパターンサイズ
+        """
+        with self._lock:
+            self._last_detection[camera_id] = {
+                "frame": frame.copy(),
+                "corners": corners.copy(),
+                "pattern_size": pattern_size,
+                "timestamp": datetime.now()
+            }
+            print(f"[Calibration] Camera {camera_id}: Detection stored")
+    
+    def get_stored_detection(self, camera_id: int, max_age_seconds: float = 10.0) -> Optional[Dict]:
+        """Capture用に保持された検出結果を取得
+        
+        Args:
+            camera_id: カメラID
+            max_age_seconds: 有効な最大経過時間（秒）
+            
+        Returns:
+            検出結果、またはNone
+        """
+        with self._lock:
+            if camera_id not in self._last_detection:
+                return None
+            
+            detection = self._last_detection[camera_id]
+            age = (datetime.now() - detection["timestamp"]).total_seconds()
+            
+            if age > max_age_seconds:
+                print(f"[Calibration] Camera {camera_id}: Stored detection expired ({age:.1f}s > {max_age_seconds}s)")
+                return None
+            
+            return detection
+    
+    def clear_stored_detection(self, camera_id: Optional[int] = None):
+        """保持された検出結果をクリア"""
+        with self._lock:
+            if camera_id is None:
+                self._last_detection = {}
+            elif camera_id in self._last_detection:
+                del self._last_detection[camera_id]
     
     def get_detection_info(self, corners: np.ndarray, image_shape: Tuple[int, int]) -> Dict:
         """検出情報を取得

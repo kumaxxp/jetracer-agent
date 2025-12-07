@@ -46,6 +46,9 @@ def detect_checkerboard(camera_id: int):
     detected, corners, preview, detected_pattern = calibration_manager.detect_checkerboard(frame)
     
     if detected:
+        # 検出結果を保持（Capture用）
+        calibration_manager.store_detection(camera_id, frame, corners, detected_pattern)
+        
         # プレビュー画像をBase64に変換
         _, buffer = cv2.imencode('.jpg', preview, [cv2.IMWRITE_JPEG_QUALITY, 85])
         preview_base64 = base64.b64encode(buffer).decode('utf-8')
@@ -78,20 +81,38 @@ def detect_checkerboard(camera_id: int):
 
 @router.post("/capture/{camera_id}")
 def capture_single(camera_id: int):
-    """単一カメラでキャリブレーション画像を撮影"""
-    # フレーム取得
-    frame = camera_manager.read(camera_id)
-    if frame is None:
-        raise HTTPException(status_code=500, detail=f"Camera {camera_id} not available")
+    """単一カメラでキャリブレーション画像を撮影
     
-    # チェッカーボード検出（4つの戻り値）
-    detected, corners, _, detected_pattern = calibration_manager.detect_checkerboard(frame)
+    Detectで保持された結果を使用。期限切れの場合は再検出。
+    """
+    # まず保持された検出結果を確認（10秒以内）
+    stored = calibration_manager.get_stored_detection(camera_id, max_age_seconds=10.0)
     
-    if not detected:
-        raise HTTPException(status_code=400, detail="Checkerboard not detected")
+    if stored:
+        # 保持された結果を使用
+        frame = stored["frame"]
+        corners = stored["corners"]
+        detected_pattern = stored["pattern_size"]
+        print(f"[Calibration] Camera {camera_id}: Using stored detection")
+    else:
+        # 保持された結果がない/期限切れの場合は新たに検出
+        frame = camera_manager.read(camera_id)
+        if frame is None:
+            raise HTTPException(status_code=500, detail=f"Camera {camera_id} not available")
+        
+        detected, corners, _, detected_pattern = calibration_manager.detect_checkerboard(frame)
+        
+        if not detected:
+            raise HTTPException(
+                status_code=400, 
+                detail="Checkerboard not detected. Please run Detect first."
+            )
     
     # 保存（パターンサイズも渡す）
     result = calibration_manager.capture_calibration_image(camera_id, frame, corners, detected_pattern)
+    
+    # 使用済みの検出結果をクリア
+    calibration_manager.clear_stored_detection(camera_id)
     
     # 次の指示を取得
     instruction = calibration_manager.get_capture_instruction()
@@ -298,7 +319,44 @@ def save_calibration():
 def load_calibration():
     """キャリブレーション結果を読み込み"""
     calibration_manager._load_results()
+    
+    # カメラマネージャーにも読み込み
+    camera_manager.load_calibration_from_manager()
+    
     return {
         "success": True,
         "status": calibration_manager.get_status()
     }
+
+
+@router.post("/undistort-mode/{camera_id}")
+def set_undistort_mode(camera_id: int, enabled: bool = True):
+    """歪み補正のON/OFFを設定
+    
+    Args:
+        camera_id: カメラID (0 or 1)
+        enabled: 有効にするか
+    """
+    # キャリブレーションデータがない場合は読み込みを試みる
+    if enabled and not camera_manager.has_calibration(camera_id):
+        camera_manager.load_calibration_from_manager()
+    
+    success = camera_manager.set_undistort_enabled(camera_id, enabled)
+    
+    if not success:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Camera {camera_id} not calibrated. Run calibration first."
+        )
+    
+    return {
+        "success": True,
+        "camera_id": camera_id,
+        "undistort_enabled": enabled
+    }
+
+
+@router.get("/undistort-status")
+def get_undistort_status():
+    """歪み補正の状態を取得"""
+    return camera_manager.get_undistort_status()

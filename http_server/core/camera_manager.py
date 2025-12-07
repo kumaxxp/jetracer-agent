@@ -220,6 +220,10 @@ class MultiCameraManager:
         self._initialized = True
         self._cameras: Dict[int, CameraInstance] = {}
         self._default_camera_id = 0
+        
+        # 歪み補正設定
+        self._undistort_enabled: Dict[int, bool] = {}  # camera_id -> enabled
+        self._calibration_data: Dict[int, Dict] = {}   # camera_id -> {camera_matrix, dist_coeffs, new_camera_matrix}
 
     def start(self, width: int = 320, height: int = 240, fps: int = 10, camera_id: int = 0) -> bool:
         """指定カメラを起動"""
@@ -236,8 +240,30 @@ class MultiCameraManager:
             results[cid] = self.start(width, height, fps, cid)
         return results
 
-    def read(self, camera_id: int = 0) -> Optional[np.ndarray]:
-        """指定カメラからフレーム取得"""
+    def read(self, camera_id: int = 0, apply_undistort: bool = True) -> Optional[np.ndarray]:
+        """指定カメラからフレーム取得
+        
+        Args:
+            camera_id: カメラID
+            apply_undistort: 歪み補正を適用するか（デフォルトTrue、設定がONの場合のみ適用）
+        """
+        if camera_id not in self._cameras:
+            return None
+        
+        frame = self._cameras[camera_id].read()
+        
+        # 歪み補正が有効かつキャリブレーションデータがある場合
+        if (apply_undistort and 
+            frame is not None and 
+            self._undistort_enabled.get(camera_id, False) and 
+            camera_id in self._calibration_data):
+            
+            frame = self._apply_undistort(camera_id, frame)
+        
+        return frame
+
+    def read_raw(self, camera_id: int = 0) -> Optional[np.ndarray]:
+        """歪み補正なしでフレーム取得"""
         if camera_id not in self._cameras:
             return None
         return self._cameras[camera_id].read()
@@ -275,6 +301,112 @@ class MultiCameraManager:
     def get_active_cameras(self) -> list:
         """アクティブなカメラIDリストを返す"""
         return [cid for cid, cam in self._cameras.items() if cam.is_ready()]
+
+    # ====== 歪み補正関連 ======
+    
+    def set_undistort_enabled(self, camera_id: int, enabled: bool) -> bool:
+        """歪み補正の有効/無効を設定
+        
+        Args:
+            camera_id: カメラID
+            enabled: 有効にするか
+            
+        Returns:
+            成功したか（キャリブレーションデータがない場合はFalse）
+        """
+        if enabled and camera_id not in self._calibration_data:
+            print(f"[CameraManager] Camera {camera_id}: No calibration data, cannot enable undistort")
+            return False
+        
+        self._undistort_enabled[camera_id] = enabled
+        print(f"[CameraManager] Camera {camera_id}: Undistort {'enabled' if enabled else 'disabled'}")
+        return True
+    
+    def is_undistort_enabled(self, camera_id: int) -> bool:
+        """歪み補正が有効か確認"""
+        return self._undistort_enabled.get(camera_id, False)
+    
+    def set_calibration_data(self, camera_id: int, camera_matrix: np.ndarray, 
+                             dist_coeffs: np.ndarray, image_size: tuple = None):
+        """キャリブレーションデータを設定
+        
+        Args:
+            camera_id: カメラID
+            camera_matrix: カメラ行列 (3x3)
+            dist_coeffs: 歪み係数
+            image_size: 画像サイズ (width, height)、Noneの場合はカメラの解像度を使用
+        """
+        if image_size is None:
+            image_size = self.get_resolution(camera_id)
+        
+        w, h = image_size
+        
+        # 最適カメラ行列を事前計算
+        new_camera_matrix, roi = cv2.getOptimalNewCameraMatrix(
+            camera_matrix, dist_coeffs, (w, h), 1, (w, h)
+        )
+        
+        self._calibration_data[camera_id] = {
+            "camera_matrix": camera_matrix,
+            "dist_coeffs": dist_coeffs,
+            "new_camera_matrix": new_camera_matrix,
+            "roi": roi,
+            "image_size": (w, h)
+        }
+        
+        print(f"[CameraManager] Camera {camera_id}: Calibration data set ({w}x{h})")
+    
+    def load_calibration_from_manager(self):
+        """CalibrationManagerからキャリブレーションデータを読み込み"""
+        try:
+            from .calibration import calibration_manager
+            
+            for camera_id in [0, 1]:
+                if calibration_manager.is_calibrated(camera_id):
+                    mtx = calibration_manager.get_camera_matrix(camera_id)
+                    dist = calibration_manager.get_dist_coeffs(camera_id)
+                    
+                    if mtx is not None and dist is not None:
+                        result = calibration_manager._results.get(camera_id)
+                        image_size = result.image_size if result else None
+                        self.set_calibration_data(camera_id, mtx, dist, image_size)
+                        print(f"[CameraManager] Camera {camera_id}: Loaded calibration from CalibrationManager")
+        except Exception as e:
+            print(f"[CameraManager] Failed to load calibration: {e}")
+    
+    def has_calibration(self, camera_id: int) -> bool:
+        """キャリブレーションデータがあるか確認"""
+        return camera_id in self._calibration_data
+    
+    def _apply_undistort(self, camera_id: int, frame: np.ndarray) -> np.ndarray:
+        """歪み補正を適用"""
+        if camera_id not in self._calibration_data:
+            return frame
+        
+        calib = self._calibration_data[camera_id]
+        
+        try:
+            undistorted = cv2.undistort(
+                frame,
+                calib["camera_matrix"],
+                calib["dist_coeffs"],
+                None,
+                calib["new_camera_matrix"]
+            )
+            return undistorted
+        except Exception as e:
+            print(f"[CameraManager] Camera {camera_id}: Undistort error: {e}")
+            return frame
+    
+    def get_undistort_status(self) -> Dict:
+        """歪み補正の状態を取得"""
+        status = {}
+        for camera_id in [0, 1]:
+            status[camera_id] = {
+                "has_calibration": self.has_calibration(camera_id),
+                "enabled": self.is_undistort_enabled(camera_id)
+            }
+        return status
 
 
 # シングルトンインスタンス
