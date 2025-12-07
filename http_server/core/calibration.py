@@ -464,8 +464,68 @@ class CalibrationManager:
                 traceback.print_exc()
                 return None
     
+    def _parse_timestamp(self, timestamp_str: str) -> Optional[datetime]:
+        """タイムスタンプ文字列をdatetimeに変換
+        
+        Args:
+            timestamp_str: "YYYYMMDD_HHMMSS_ffffff" 形式
+            
+        Returns:
+            datetime オブジェクト
+        """
+        try:
+            return datetime.strptime(timestamp_str, "%Y%m%d_%H%M%S_%f")
+        except ValueError:
+            return None
+    
+    def _find_stereo_pairs(self, max_time_diff_seconds: float = 1.0) -> List[Tuple[Dict, Dict]]:
+        """タイムスタンプが近いステレオペアを検索
+        
+        Args:
+            max_time_diff_seconds: ペアと見なす最大時間差（秒）
+            
+        Returns:
+            [(cam0_data, cam1_data), ...] のリスト
+        """
+        data0 = self._captured_data[0]
+        data1 = self._captured_data[1]
+        
+        pairs = []
+        used_indices_1 = set()  # 既にペアになったCamera 1のインデックス
+        
+        for d0 in data0:
+            ts0 = self._parse_timestamp(d0.get("timestamp", ""))
+            if ts0 is None:
+                continue
+            
+            best_match = None
+            best_diff = float('inf')
+            best_idx = -1
+            
+            for idx, d1 in enumerate(data1):
+                if idx in used_indices_1:
+                    continue
+                    
+                ts1 = self._parse_timestamp(d1.get("timestamp", ""))
+                if ts1 is None:
+                    continue
+                
+                time_diff = abs((ts0 - ts1).total_seconds())
+                
+                if time_diff < max_time_diff_seconds and time_diff < best_diff:
+                    best_diff = time_diff
+                    best_match = d1
+                    best_idx = idx
+            
+            if best_match is not None:
+                pairs.append((d0, best_match))
+                used_indices_1.add(best_idx)
+                print(f"[Calibration] Stereo pair found: {d0['timestamp']} <-> {best_match['timestamp']} (diff: {best_diff:.3f}s)")
+        
+        return pairs
+    
     def calibrate_stereo(self) -> Optional[StereoCalibrationResult]:
-        """ステレオキャリブレーション
+        """ステレオキャリブレーション（タイムスタンプベースのペアリング）
         
         Returns:
             ステレオキャリブレーション結果
@@ -476,24 +536,25 @@ class CalibrationManager:
                 print("[Calibration] Stereo: Single camera calibration required first")
                 return None
             
-            data0 = self._captured_data[0]
-            data1 = self._captured_data[1]
+            # タイムスタンプベースでペアを検索
+            pairs = self._find_stereo_pairs(max_time_diff_seconds=1.0)
             
-            # ペア数を確認
-            pair_count = min(len(data0), len(data1))
-            if pair_count < 10:
-                print(f"[Calibration] Stereo: Not enough pairs ({pair_count} < 10)")
+            if len(pairs) < 10:
+                print(f"[Calibration] Stereo: Not enough stereo pairs ({len(pairs)} < 10)")
+                print(f"[Calibration] Stereo: Use 'Capture Stereo Pair' to capture simultaneous images")
                 return None
+            
+            print(f"[Calibration] Stereo: Found {len(pairs)} valid stereo pairs")
             
             # データを収集
             obj_points = []
             img_points0 = []
             img_points1 = []
             
-            for i in range(pair_count):
+            for i, (d0, d1) in enumerate(pairs):
                 # パターンサイズを取得
-                pattern0 = data0[i].get("pattern_size", self.pattern_size)
-                pattern1 = data1[i].get("pattern_size", self.pattern_size)
+                pattern0 = d0.get("pattern_size", self.pattern_size)
+                pattern1 = d1.get("pattern_size", self.pattern_size)
                 if isinstance(pattern0, list):
                     pattern0 = tuple(pattern0)
                 if isinstance(pattern1, list):
@@ -507,8 +568,8 @@ class CalibrationManager:
                 objp = self._create_object_points(pattern0)
                 
                 # cornersの形式を正しく変換
-                corners0 = np.array(data0[i]["corners"], dtype=np.float32)
-                corners1 = np.array(data1[i]["corners"], dtype=np.float32)
+                corners0 = np.array(d0["corners"], dtype=np.float32)
+                corners1 = np.array(d1["corners"], dtype=np.float32)
                 
                 if corners0.ndim == 2 and corners0.shape[1] == 2:
                     corners0 = corners0.reshape(-1, 1, 2)
