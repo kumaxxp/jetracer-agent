@@ -12,14 +12,14 @@ import threading
 class GridCalibrationConfig:
     """グリッドキャリブレーション設定"""
     # カメラ取り付けパラメータ
-    camera_height_mm: float = 150.0      # カメラの地面からの高さ (mm)
-    camera_pitch_deg: float = 30.0       # カメラの俯角 (degrees, 下向きが正)
+    camera_height_mm: float = 270.0      # カメラの地面からの高さ (mm)
+    camera_pitch_deg: float = 0.0        # カメラの俯角 (degrees, 下向きが正)
     camera_roll_deg: float = 0.0         # カメラのロール角 (degrees)
     
     # グリッド表示範囲
-    grid_depth_min_m: float = 0.2        # グリッド最小奥行き (m)
-    grid_depth_max_m: float = 3.0        # グリッド最大奥行き (m)
-    grid_width_m: float = 1.0            # グリッド全幅 (m)
+    grid_depth_min_m: float = 0.5        # グリッド最小奥行き (m)
+    grid_depth_max_m: float = 2.0        # グリッド最大奥行き (m)
+    grid_width_m: float = 0.6            # グリッド全幅 (m)
     
     # グリッド密度
     grid_depth_lines: int = 10           # 奥行き方向の線数
