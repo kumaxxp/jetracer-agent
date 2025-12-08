@@ -1,0 +1,14 @@
+{
+  "0": {
+    "camera_height_mm": 270.0,
+    "camera_pitch_deg": 0.0,
+    "camera_roll_deg": 0.0,
+    "grid_depth_min_m": 0.8,
+    "grid_depth_max_m": 4.0,
+    "grid_width_m": 1.2,
+    "grid_depth_lines": 10,
+    "grid_width_lines": 11,
+    "vanishing_point_y": 0.3,
+    "perspective_strength": 1.0
+  }
+}
