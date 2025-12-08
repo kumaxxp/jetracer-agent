@@ -374,7 +374,44 @@ class MultiCameraManager:
                         self.set_calibration_data(camera_id, mtx, dist, image_size)
                         print(f"[CameraManager] Camera {camera_id}: Loaded calibration from CalibrationManager")
         except Exception as e:
-            print(f"[CameraManager] Failed to load calibration: {e}")
+            print(f"[CameraManager] Failed to load from CalibrationManager: {e}")
+            # フォールバック: JSONファイルから直接ロード
+            self.load_calibration_from_json()
+    
+    def load_calibration_from_json(self, json_path: str = None):
+        """JSONファイルから直接キャリブレーションデータを読み込み"""
+        import json
+        from pathlib import Path
+        
+        if json_path is None:
+            # デフォルトパス
+            base_dir = Path(__file__).parent.parent.parent
+            json_path = base_dir / "calibration_data" / "calibration_results.json"
+        else:
+            json_path = Path(json_path)
+        
+        if not json_path.exists():
+            print(f"[CameraManager] Calibration JSON not found: {json_path}")
+            return
+        
+        try:
+            with open(json_path) as f:
+                data = json.load(f)
+            
+            for cam_id_str, cam_data in data.get("cameras", {}).items():
+                camera_id = int(cam_id_str)
+                
+                camera_matrix = np.array(cam_data["camera_matrix"])
+                dist_coeffs = np.array(cam_data["dist_coeffs"])
+                image_size = tuple(cam_data["image_size"])
+                
+                self.set_calibration_data(camera_id, camera_matrix, dist_coeffs, image_size)
+                print(f"[CameraManager] Camera {camera_id}: Loaded calibration from JSON")
+                
+        except Exception as e:
+            print(f"[CameraManager] Failed to load calibration from JSON: {e}")
+            import traceback
+            traceback.print_exc()
     
     def has_calibration(self, camera_id: int) -> bool:
         """キャリブレーションデータがあるか確認"""

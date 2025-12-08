@@ -43,15 +43,26 @@ class DistanceGridManager:
     """距離グリッド管理"""
     
     def __init__(self, 
-                 calibration_results_path: str = "calibration_data/calibration_results.json",
-                 grid_config_path: str = "calibration_data/grid_config.json"):
+                 calibration_results_path: str = None,
+                 grid_config_path: str = None):
         """
         Args:
             calibration_results_path: カメラキャリブレーション結果のパス
             grid_config_path: グリッド設定の保存パス
         """
+        # デフォルトパスを絶対パスで設定
+        base_dir = Path(__file__).parent.parent.parent  # jetracer-agent/
+        
+        if calibration_results_path is None:
+            calibration_results_path = base_dir / "calibration_data" / "calibration_results.json"
+        if grid_config_path is None:
+            grid_config_path = base_dir / "calibration_data" / "grid_config.json"
+        
         self.calibration_results_path = Path(calibration_results_path)
         self.grid_config_path = Path(grid_config_path)
+        
+        print(f"[DistanceGrid] Calibration path: {self.calibration_results_path}")
+        print(f"[DistanceGrid] Grid config path: {self.grid_config_path}")
         
         # カメラキャリブレーション結果
         self._camera_matrices: Dict[int, np.ndarray] = {}
@@ -70,7 +81,7 @@ class DistanceGridManager:
         # グリッド設定を読み込み
         self._load_grid_config()
         
-        print(f"[DistanceGrid] Initialized")
+        print(f"[DistanceGrid] Initialized, cameras with calibration: {list(self._camera_matrices.keys())}")
     
     def _load_calibration_results(self):
         """カメラキャリブレーション結果を読み込み"""
@@ -327,7 +338,18 @@ class DistanceGridManager:
         """
         result = image.copy()
         
+        # キャリブレーションデータがない場合は警告テキストを表示
+        if camera_id not in self._camera_matrices:
+            cv2.putText(result, f"No calibration for camera {camera_id}", 
+                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            print(f"[DistanceGrid] No calibration data for camera {camera_id}")
+            return result
+        
         grid_data = self.compute_grid_lines(camera_id)
+        
+        h_lines = len(grid_data["horizontal_lines"])
+        v_lines = len(grid_data["vertical_lines"])
+        print(f"[DistanceGrid] Camera {camera_id}: {h_lines} horizontal, {v_lines} vertical lines")
         
         # 水平線（奥行き方向）
         for line_data in grid_data["horizontal_lines"]:

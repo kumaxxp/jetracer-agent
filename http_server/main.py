@@ -24,6 +24,18 @@ async def lifespan(app: FastAPI):
     )
     for cid, ok in results.items():
         print(f"[Server] Camera {cid}: {'ready' if ok else 'failed'}")
+    
+    # キャリブレーションデータをロードして歪み補正を有効化
+    try:
+        camera_manager.load_calibration_from_manager()
+        
+        # 歪み補正を有効化
+        for cid in [0, 1]:
+            if camera_manager.has_calibration(cid):
+                camera_manager.set_undistort_enabled(cid, True)
+                print(f"[Server] Camera {cid}: Undistortion enabled")
+    except Exception as e:
+        print(f"[Server] Failed to load calibration: {e}")
 
     yield
 
