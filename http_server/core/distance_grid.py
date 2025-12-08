@@ -462,8 +462,20 @@ class DistanceGridManager:
             "camera_id": camera_id,
             "has_camera_calibration": has_calibration,
             "config": asdict(config),
-            "image_size": self._image_sizes.get(camera_id)
+            "image_size": self._image_sizes.get(camera_id),
+            "calibration_path": str(self.calibration_results_path),
+            "calibration_path_exists": self.calibration_results_path.exists()
         }
+    
+    def reload_calibration(self):
+        """キャリブレーションデータを再読み込み"""
+        print("[DistanceGrid] Reloading calibration data...")
+        self._camera_matrices.clear()
+        self._dist_coeffs.clear()
+        self._image_sizes.clear()
+        self._load_calibration_results()
+        print(f"[DistanceGrid] Reload complete, cameras: {list(self._camera_matrices.keys())}")
+        return list(self._camera_matrices.keys())
 
 
 # シングルトンインスタンス

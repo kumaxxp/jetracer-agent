@@ -36,7 +36,19 @@ class DistanceQueryRequest(BaseModel):
 @router.get("/{camera_id}/status")
 async def get_grid_status(camera_id: int):
     """グリッドステータスを取得"""
-    return distance_grid_manager.get_status(camera_id)
+    status = distance_grid_manager.get_status(camera_id)
+    print(f"[DistanceGrid API] Status for camera {camera_id}: {status}")
+    return status
+
+
+@router.post("/reload-calibration")
+async def reload_calibration():
+    """キャリブレーションデータを再読み込み"""
+    cameras = distance_grid_manager.reload_calibration()
+    return {
+        "message": "Calibration reloaded",
+        "cameras_with_calibration": cameras
+    }
 
 
 @router.get("/{camera_id}/config")
@@ -70,20 +82,28 @@ async def get_grid_lines(camera_id: int):
 
 
 @router.get("/{camera_id}/preview")
-async def get_grid_preview(camera_id: int, undistort: bool = False):
+async def get_grid_preview(camera_id: int, undistort: bool = True):
     """グリッドプレビュー画像を取得
     
     Args:
         camera_id: カメラID
-        undistort: 歪み補正を適用するか
+        undistort: 歪み補正を適用するか（デフォルト: True）
     
     Returns:
         Base64エンコードされたプレビュー画像
     """
-    # カメラからフレームを取得（歪み補正はcamera_managerの設定に依存）
+    print(f"[DistanceGrid API] Preview request: camera={camera_id}, undistort={undistort}")
+    
+    # デバッグ: グリッドマネージャーの状態
+    status = distance_grid_manager.get_status(camera_id)
+    print(f"[DistanceGrid API] Grid status: {status}")
+    
+    # カメラからフレームを取得
     frame = camera_manager.read(camera_id, apply_undistort=undistort)
     if frame is None:
         raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
+    
+    print(f"[DistanceGrid API] Frame shape: {frame.shape}")
     
     # グリッドオーバーレイを描画
     result = distance_grid_manager.draw_grid_overlay(

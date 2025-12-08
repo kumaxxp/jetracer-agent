@@ -6,6 +6,7 @@ import uvicorn
 
 from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid
 from .core.camera_manager import camera_manager
+from .core.distance_grid import distance_grid_manager
 from .config import config
 
 
@@ -27,15 +28,22 @@ async def lifespan(app: FastAPI):
     
     # キャリブレーションデータをロードして歪み補正を有効化
     try:
-        camera_manager.load_calibration_from_manager()
+        # JSONから直接ロード（確実）
+        camera_manager.load_calibration_from_json()
         
         # 歪み補正を有効化
         for cid in [0, 1]:
             if camera_manager.has_calibration(cid):
                 camera_manager.set_undistort_enabled(cid, True)
                 print(f"[Server] Camera {cid}: Undistortion enabled")
+        
+        # Distance Grid Managerのキャリブレーションも再読み込み
+        distance_grid_manager.reload_calibration()
+        
     except Exception as e:
         print(f"[Server] Failed to load calibration: {e}")
+        import traceback
+        traceback.print_exc()
 
     yield
 
