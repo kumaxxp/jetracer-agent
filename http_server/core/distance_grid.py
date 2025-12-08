@@ -157,6 +157,11 @@ class DistanceGridManager:
     def world_to_pixel(self, camera_id: int, world_x: float, world_y: float) -> Optional[Tuple[float, float]]:
         """実世界座標をピクセル座標に変換
         
+        座標系:
+        - 世界座標: X=右、Y=前方（奥行き）、Z=上
+        - カメラ座標: x=右、y=下、z=前
+        - カメラは高さhにあり、pitch角で下を向いている
+        
         Args:
             camera_id: カメラID
             world_x: 実世界X座標 (m, 左が負、右が正)
@@ -177,39 +182,30 @@ class DistanceGridManager:
         cx, cy = K[0, 2], K[1, 2]
         
         # カメラの取り付けパラメータ（mm → m変換）
-        h = config.camera_height_mm / 1000.0
-        pitch = np.radians(config.camera_pitch_deg)
+        h = config.camera_height_mm / 1000.0  # カメラ高さ (m)
+        pitch = np.radians(config.camera_pitch_deg)  # 俯角 (rad)
         
-        # 簡易的な投影計算（ピンホールカメラモデル + 路面平面）
-        # 路面は Z=0 平面、カメラは (0, 0, h) にあり、pitch角で傾いている
+        # 路面上の点 (world_x, world_y, 0)
+        # カメラ位置は (0, 0, h)
         
-        # 世界座標 (X, Y, 0) をカメラ座標系に変換
+        # 世界座標系での点（カメラ原点からの相対位置）
+        # X: 右方向、Y: 前方向、Z: 上方向
+        dx = world_x      # 横方向オフセット
+        dy = world_y      # 前方向距離
+        dz = -h           # 路面はカメラより下
+        
+        # カメラ座標系への変換（pitch回転: X軸周りの回転）
+        # pitch > 0 で下を向く
         # カメラ座標系: x=右、y=下、z=前
-        X_world = world_x
-        Y_world = world_y
-        Z_world = 0  # 路面
+        x_cam = dx
+        y_cam = -dz * np.cos(pitch) + dy * np.sin(pitch)  # 下方向
+        z_cam = dz * np.sin(pitch) + dy * np.cos(pitch)   # 前方向
         
-        # 回転行列（pitch回転）
-        R = np.array([
-            [1, 0, 0],
-            [0, np.cos(pitch), -np.sin(pitch)],
-            [0, np.sin(pitch), np.cos(pitch)]
-        ])
-        
-        # カメラ位置
-        t = np.array([0, -h * np.cos(pitch), h * np.sin(pitch)])
-        
-        # 世界座標 → カメラ座標
-        P_world = np.array([X_world, Z_world, Y_world])  # Y_worldが奥行き
-        P_cam = R @ P_world + t
-        
-        x_cam, y_cam, z_cam = P_cam
-        
-        # カメラ後方は投影しない
+        # カメラ後方（z_cam <= 0）は投影しない
         if z_cam <= 0.01:
             return None
         
-        # 投影
+        # ピンホールカメラモデルで投影
         u = fx * (x_cam / z_cam) + cx
         v = fy * (y_cam / z_cam) + cy
         
