@@ -64,7 +64,6 @@ async def update_grid_config(camera_id: int, update: GridConfigUpdate):
     """グリッド設定を更新"""
     from dataclasses import asdict
     
-    # None以外のフィールドのみ更新
     update_dict = {k: v for k, v in update.dict().items() if v is not None}
     
     if not update_dict:
@@ -83,29 +82,18 @@ async def get_grid_lines(camera_id: int):
 
 @router.get("/{camera_id}/preview")
 async def get_grid_preview(camera_id: int, undistort: bool = True):
-    """グリッドプレビュー画像を取得
-    
-    Args:
-        camera_id: カメラID
-        undistort: 歪み補正を適用するか（デフォルト: True）
-    
-    Returns:
-        Base64エンコードされたプレビュー画像
-    """
+    """グリッドプレビュー画像を取得"""
     print(f"[DistanceGrid API] Preview request: camera={camera_id}, undistort={undistort}")
     
-    # デバッグ: グリッドマネージャーの状態
     status = distance_grid_manager.get_status(camera_id)
     print(f"[DistanceGrid API] Grid status: {status}")
     
-    # カメラからフレームを取得
     frame = camera_manager.read(camera_id, apply_undistort=undistort)
     if frame is None:
         raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
     
     print(f"[DistanceGrid API] Frame shape: {frame.shape}")
     
-    # グリッドオーバーレイを描画
     result = distance_grid_manager.draw_grid_overlay(
         camera_id, frame,
         color=(0, 255, 0),
@@ -113,7 +101,6 @@ async def get_grid_preview(camera_id: int, undistort: bool = True):
         show_labels=True
     )
     
-    # JPEG圧縮
     _, buffer = cv2.imencode('.jpg', result, [cv2.IMWRITE_JPEG_QUALITY, 85])
     img_base64 = base64.b64encode(buffer).decode('utf-8')
     
@@ -136,63 +123,64 @@ async def get_grid_preview(camera_id: int, undistort: bool = True):
 async def get_grid_overlay_on_segmentation(
     camera_id: int,
     highlight_road: bool = True,
-    undistort: bool = False
+    undistort: bool = True
 ):
-    """セグメンテーション結果にグリッドオーバーレイを合成
+    """セグメンテーション結果にグリッドオーバーレイを合成"""
+    from .oneformer import run_oneformer_internal
     
-    Args:
-        camera_id: カメラID
-        highlight_road: ROAD領域をハイライトするか
-        undistort: 歪み補正を適用するか
-    
-    Returns:
-        セグメンテーション + グリッドの合成画像
-    """
-    from ..core.ade20k_segmentation import ade20k_segmentor
-    from ..core.road_mapping import road_mapping_manager
-    
-    # カメラからフレームを取得
-    frame = camera_manager.read(camera_id, apply_undistort=undistort)
-    if frame is None:
-        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
-    
-    # セグメンテーション実行
-    seg_result = ade20k_segmentor.segment(frame)
-    if seg_result is None:
-        raise HTTPException(status_code=500, detail="Segmentation failed")
-    
-    # オーバーレイ画像を生成
-    overlay = ade20k_segmentor.create_overlay(frame, seg_result["segmentation"])
-    
-    # ROADハイライト（オプション）
-    if highlight_road:
-        road_labels = road_mapping_manager.get_road_labels()
-        if road_labels:
-            overlay = ade20k_segmentor.highlight_road_regions(
-                overlay, 
-                seg_result["segmentation"],
-                road_labels
-            )
-    
-    # グリッドオーバーレイを追加（緑色）
-    grid_overlay = distance_grid_manager.draw_grid_overlay(
-        camera_id, overlay,
-        color=(0, 255, 0),
-        thickness=1,
-        show_labels=True
-    )
-    
-    # JPEG圧縮
-    _, buffer = cv2.imencode('.jpg', grid_overlay, [cv2.IMWRITE_JPEG_QUALITY, 85])
-    img_base64 = base64.b64encode(buffer).decode('utf-8')
-    
-    return {
-        "image_base64": img_base64,
-        "camera_id": camera_id,
-        "segmentation_classes": seg_result.get("detected_classes", []),
-        "num_classes": seg_result.get("num_classes", 0),
-        "road_labels": road_mapping_manager.get_road_labels() if highlight_road else []
-    }
+    try:
+        print(f"[DistanceGrid] overlay-on-segmentation: camera={camera_id}, highlight_road={highlight_road}")
+        
+        # OneFormerでセグメンテーション実行
+        seg_result = run_oneformer_internal(camera_id, highlight_road)
+        print(f"[DistanceGrid] OneFormer result keys: {seg_result.keys()}")
+        
+        # オーバーレイ画像をデコード
+        overlay_base64 = seg_result.get('overlay_base64', '')
+        if not overlay_base64:
+            raise HTTPException(status_code=500, detail="Failed to get overlay image")
+        
+        print(f"[DistanceGrid] overlay_base64 length: {len(overlay_base64)}")
+        
+        overlay_bytes = base64.b64decode(overlay_base64)
+        overlay_array = np.frombuffer(overlay_bytes, dtype=np.uint8)
+        overlay_image = cv2.imdecode(overlay_array, cv2.IMREAD_COLOR)
+        
+        if overlay_image is None:
+            raise HTTPException(status_code=500, detail="Failed to decode overlay image")
+        
+        print(f"[DistanceGrid] overlay_image shape: {overlay_image.shape}")
+        
+        # グリッドオーバーレイを追加（緑色）
+        grid_overlay = distance_grid_manager.draw_grid_overlay(
+            camera_id, overlay_image,
+            color=(0, 255, 0),
+            thickness=2,
+            show_labels=True
+        )
+        
+        # JPEG圧縮
+        _, buffer = cv2.imencode('.jpg', grid_overlay, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        img_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        print(f"[DistanceGrid] Output image base64 length: {len(img_base64)}")
+        
+        return {
+            "image_base64": img_base64,
+            "camera_id": camera_id,
+            "segmentation_classes": seg_result.get("classes", []),
+            "num_classes": seg_result.get("num_classes", 0),
+            "road_labels": seg_result.get("road_labels", []),
+            "process_time_ms": seg_result.get("process_time_ms", 0)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"[DistanceGrid] Error in overlay-on-segmentation: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{camera_id}/distance-at-point")
@@ -221,108 +209,116 @@ async def get_distance_at_point(camera_id: int, request: DistanceQueryRequest):
 async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False):
     """セグメンテーション結果をグリッドで分析
     
-    各グリッドセル内のROAD領域の割合を計算
-    
-    Returns:
-        グリッドセルごとのROAD割合と距離情報
+    各グリッドセル内のROAD領域の割合を計算し、ナビゲーションヒントを生成
     """
-    from ..core.ade20k_segmentation import ade20k_segmentor
-    from ..core.road_mapping import road_mapping_manager
+    from .oneformer import get_segmenter, _latest_seg_masks, run_oneformer_internal
+    from ..core.road_mapping import get_road_mapping
     
-    # カメラからフレームを取得
-    frame = camera_manager.read(camera_id, apply_undistort=undistort)
-    if frame is None:
-        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
-    
-    # セグメンテーション実行
-    seg_result = ade20k_segmentor.segment(frame)
-    if seg_result is None:
-        raise HTTPException(status_code=500, detail="Segmentation failed")
-    
-    segmentation = seg_result["segmentation"]
-    
-    # ROADラベルを取得
-    road_labels = road_mapping_manager.get_road_labels()
-    road_label_ids = set()
-    
-    # ラベル名からIDへの変換
-    for label_name in road_labels:
-        label_id = ade20k_segmentor.get_label_id(label_name)
-        if label_id is not None:
-            road_label_ids.add(label_id)
-    
-    # グリッドデータを取得
-    config = distance_grid_manager.get_config(camera_id)
-    grid_data = distance_grid_manager.compute_grid_lines(camera_id)
-    
-    # 各奥行きラインでROAD割合を計算
-    depth_analysis = []
-    
-    h, w = segmentation.shape
-    
-    for line_data in grid_data["horizontal_lines"]:
-        depth_m = line_data["depth_m"]
-        points = line_data["points"]
+    try:
+        print(f"[DistanceGrid] analyze-segmentation: camera={camera_id}")
         
-        if len(points) < 2:
-            continue
+        # OneFormerでセグメンテーション実行
+        seg_result = run_oneformer_internal(camera_id, highlight_road=True)
         
-        # この奥行きラインのY座標（平均）
-        y_pixels = [int(p[1]) for p in points]
-        y_avg = np.mean(y_pixels)
+        # 最新のセグメンテーションマスクを取得
+        if camera_id not in _latest_seg_masks:
+            raise HTTPException(status_code=500, detail="Segmentation mask not available")
         
-        if 0 <= y_avg < h:
-            # この行でのROAD割合を計算
-            y_idx = int(y_avg)
-            row = segmentation[y_idx, :]
-            road_pixels = sum(1 for p in row if p in road_label_ids)
-            road_ratio = road_pixels / len(row)
+        segmentation = _latest_seg_masks[camera_id]
+        print(f"[DistanceGrid] Segmentation mask shape: {segmentation.shape}")
+        
+        # ROADラベルを取得
+        road_mapping = get_road_mapping()
+        road_labels = road_mapping.get_road_labels()
+        
+        # ラベル名からIDへの変換
+        segmenter = get_segmenter()
+        road_label_ids = set()
+        for label_name in road_labels:
+            for lid, lname in segmenter.id2label.items():
+                if lname == label_name:
+                    road_label_ids.add(int(lid))
+                    break
+        
+        print(f"[DistanceGrid] Road label IDs: {road_label_ids}")
+        
+        # グリッドデータを取得
+        config = distance_grid_manager.get_config(camera_id)
+        grid_data = distance_grid_manager.compute_grid_lines(camera_id)
+        
+        # 各奥行きラインでROAD割合を計算
+        depth_analysis = []
+        h, w = segmentation.shape
+        
+        for line_data in grid_data["horizontal_lines"]:
+            depth_m = line_data["depth_m"]
+            points = line_data["points"]
             
-            depth_analysis.append({
-                "depth_m": depth_m,
-                "road_ratio": float(road_ratio),
-                "pixel_y": y_idx
-            })
-    
-    # 左右のROAD分布を分析
-    lateral_analysis = []
-    for line_data in grid_data["vertical_lines"]:
-        offset_m = line_data["offset_m"]
-        points = line_data["points"]
-        
-        if len(points) < 2:
-            continue
-        
-        # このラインのX座標（平均）
-        x_pixels = [int(p[0]) for p in points]
-        x_avg = np.mean(x_pixels)
-        
-        if 0 <= x_avg < w:
-            x_idx = int(x_avg)
-            col = segmentation[:, x_idx]
-            road_pixels = sum(1 for p in col if p in road_label_ids)
-            road_ratio = road_pixels / len(col)
+            if len(points) < 2:
+                continue
             
-            lateral_analysis.append({
-                "offset_m": offset_m,
-                "road_ratio": float(road_ratio),
-                "pixel_x": x_idx
-            })
-    
-    # 走行可能な方向を推定
-    navigation_hint = _compute_navigation_hint(depth_analysis, lateral_analysis)
-    
-    return {
-        "camera_id": camera_id,
-        "depth_analysis": depth_analysis,
-        "lateral_analysis": lateral_analysis,
-        "navigation_hint": navigation_hint,
-        "road_labels": list(road_labels),
-        "grid_config": {
-            "depth_range_m": [config.grid_depth_min_m, config.grid_depth_max_m],
-            "width_m": config.grid_width_m
+            y_pixels = [int(p[1]) for p in points]
+            y_avg = np.mean(y_pixels)
+            
+            if 0 <= y_avg < h:
+                y_idx = int(y_avg)
+                row = segmentation[y_idx, :]
+                road_pixels = sum(1 for p in row if p in road_label_ids)
+                road_ratio = road_pixels / len(row)
+                
+                depth_analysis.append({
+                    "depth_m": depth_m,
+                    "road_ratio": float(road_ratio),
+                    "pixel_y": y_idx
+                })
+        
+        # 左右のROAD分布を分析
+        lateral_analysis = []
+        for line_data in grid_data["vertical_lines"]:
+            offset_m = line_data["offset_m"]
+            points = line_data["points"]
+            
+            if len(points) < 2:
+                continue
+            
+            x_pixels = [int(p[0]) for p in points]
+            x_avg = np.mean(x_pixels)
+            
+            if 0 <= x_avg < w:
+                x_idx = int(x_avg)
+                col = segmentation[:, x_idx]
+                road_pixels = sum(1 for p in col if p in road_label_ids)
+                road_ratio = road_pixels / len(col)
+                
+                lateral_analysis.append({
+                    "offset_m": offset_m,
+                    "road_ratio": float(road_ratio),
+                    "pixel_x": x_idx
+                })
+        
+        # 走行可能な方向を推定
+        navigation_hint = _compute_navigation_hint(depth_analysis, lateral_analysis)
+        
+        return {
+            "camera_id": camera_id,
+            "depth_analysis": depth_analysis,
+            "lateral_analysis": lateral_analysis,
+            "navigation_hint": navigation_hint,
+            "road_labels": list(road_labels),
+            "grid_config": {
+                "depth_range_m": [config.grid_depth_min_m, config.grid_depth_max_m],
+                "width_m": config.grid_width_m
+            },
+            "process_time_ms": seg_result.get("process_time_ms", 0)
         }
-    }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"[DistanceGrid] Error in analyze-segmentation: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _compute_navigation_hint(depth_analysis: list, lateral_analysis: list) -> Dict[str, Any]:
@@ -337,11 +333,9 @@ def _compute_navigation_hint(depth_analysis: list, lateral_analysis: list) -> Di
     if not depth_analysis:
         return hint
     
-    # 近距離から遠距離へチェック
     sorted_depth = sorted(depth_analysis, key=lambda x: x["depth_m"])
     
-    # 前方の道路状況を評価
-    road_threshold = 0.3  # ROAD比率がこれ以上なら走行可能と判断
+    road_threshold = 0.3
     
     max_clear_distance = 0.0
     for d in sorted_depth:
@@ -351,12 +345,14 @@ def _compute_navigation_hint(depth_analysis: list, lateral_analysis: list) -> Di
             break
     
     hint["max_clear_distance_m"] = max_clear_distance
-    hint["forward_clear"] = max_clear_distance >= 0.5  # 0.5m以上開いていれば前進可能
+    hint["forward_clear"] = max_clear_distance >= 0.5
     
-    # 左右の道路状況を評価
     if lateral_analysis:
-        left_ratio = sum(l["road_ratio"] for l in lateral_analysis if l["offset_m"] < 0) / max(1, sum(1 for l in lateral_analysis if l["offset_m"] < 0))
-        right_ratio = sum(l["road_ratio"] for l in lateral_analysis if l["offset_m"] > 0) / max(1, sum(1 for l in lateral_analysis if l["offset_m"] > 0))
+        left_count = sum(1 for l in lateral_analysis if l["offset_m"] < 0)
+        right_count = sum(1 for l in lateral_analysis if l["offset_m"] > 0)
+        
+        left_ratio = sum(l["road_ratio"] for l in lateral_analysis if l["offset_m"] < 0) / max(1, left_count)
+        right_ratio = sum(l["road_ratio"] for l in lateral_analysis if l["offset_m"] > 0) / max(1, right_count)
         
         if hint["forward_clear"]:
             hint["recommended_direction"] = "forward"
