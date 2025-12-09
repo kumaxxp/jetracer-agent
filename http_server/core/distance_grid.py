@@ -392,6 +392,9 @@ class DistanceGridManager:
     def get_distance_at_point(self, camera_id: int, pixel_x: int, pixel_y: int) -> Optional[Dict]:
         """ピクセル座標から推定距離を取得
         
+        カメラ座標系: x=右、y=下、z=前
+        ワールド座標系: X=右、Y=前（奥行き）、Z=上
+        
         Args:
             camera_id: カメラID
             pixel_x: ピクセルX座標
@@ -404,49 +407,61 @@ class DistanceGridManager:
             return None
         
         config = self.get_config(camera_id)
-        image_size = self._image_sizes.get(camera_id, (640, 480))
         
         K = self._camera_matrices[camera_id]
         fx, fy = K[0, 0], K[1, 1]
         cx, cy = K[0, 2], K[1, 2]
         
-        h = config.camera_height_mm / 1000.0
-        pitch = np.radians(config.camera_pitch_deg)
+        h = config.camera_height_mm / 1000.0  # カメラ高さ (m)
+        pitch = np.radians(config.camera_pitch_deg)  # 俯角 (rad)
         
-        # ピクセル座標から正規化画像座標
-        x_norm = (pixel_x - cx) / fx
-        y_norm = (pixel_y - cy) / fy
+        # ピクセル座標から正規化画像座標（カメラ座標系での光線方向）
+        x_cam = (pixel_x - cx) / fx  # 右方向
+        y_cam = (pixel_y - cy) / fy  # 下方向
+        z_cam = 1.0                   # 前方向
         
-        # カメラ光線の方向（カメラ座標系）
-        ray_dir = np.array([x_norm, y_norm, 1.0])
-        ray_dir = ray_dir / np.linalg.norm(ray_dir)
+        # カメラ座標系での光線方向を正規化
+        ray_cam = np.array([x_cam, y_cam, z_cam])
+        ray_cam = ray_cam / np.linalg.norm(ray_cam)
         
-        # 回転行列（pitch）の逆変換
-        R_inv = np.array([
-            [1, 0, 0],
-            [0, np.cos(-pitch), -np.sin(-pitch)],
-            [0, np.sin(-pitch), np.cos(-pitch)]
-        ])
+        # カメラ座標系からワールド座標系への変換
+        # カメラ: x=右、y=下、z=前
+        # ワールド: X=右、Y=前、Z=上
+        # pitch回転を考慮（X軸周りの回転）
         
-        # ワールド座標系での光線方向
-        ray_world = R_inv @ ray_dir
+        # まず座標軸を入れ替え（pitch=0の場合）
+        # X_world = x_cam
+        # Y_world = z_cam * cos(pitch) + y_cam * sin(pitch)  (前方向)
+        # Z_world = -y_cam * cos(pitch) + z_cam * sin(pitch)  (上方向、カメラのyは下なので反転)
         
-        # カメラ位置（ワールド座標系）
+        ray_world_x = ray_cam[0]
+        ray_world_y = ray_cam[2] * np.cos(pitch) + ray_cam[1] * np.sin(pitch)
+        ray_world_z = -ray_cam[1] * np.cos(pitch) + ray_cam[2] * np.sin(pitch)
+        
+        ray_world = np.array([ray_world_x, ray_world_y, ray_world_z])
+        
+        # カメラ位置（ワールド座標系: 地面から高さhの位置）
         cam_pos = np.array([0, 0, h])
         
         # 路面（Z=0）との交点を計算
-        if abs(ray_world[2]) < 1e-6:
-            return None
+        # cam_pos + t * ray_world の Z成分 = 0
+        # h + t * ray_world_z = 0
+        # t = -h / ray_world_z
         
-        t = -cam_pos[2] / ray_world[2]
+        if abs(ray_world_z) < 1e-6:
+            return None  # 光線が水平（路面と交差しない）
+        
+        t = -h / ray_world_z
+        
         if t <= 0:
-            return None
+            return None  # 光線が上向き（路面と交差しない）
         
+        # 交点を計算
         intersection = cam_pos + t * ray_world
         
         return {
-            "distance_m": float(intersection[1]),  # Y方向が奥行き
-            "lateral_offset_m": float(intersection[0])  # X方向が横
+            "distance_m": float(intersection[1]),      # Y方向が奥行き（前方距離）
+            "lateral_offset_m": float(intersection[0])  # X方向が横オフセット
         }
     
     def get_status(self, camera_id: int) -> Dict:
