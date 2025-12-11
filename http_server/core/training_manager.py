@@ -387,12 +387,16 @@ class TrainingManager:
             # 最終モデル保存
             torch.save(model.state_dict(), self.models_dir / "final_model.pth")
             
-            # ONNXエクスポート
+            # ONNXエクスポート（失敗しても学習完了とする）
             self.state.message = "Exporting ONNX..."
-            self._export_onnx(model, self.models_dir / "road_segmentation.onnx")
-            
-            self.state.status = TrainingStatus.COMPLETED
-            self.state.message = "Training completed!"
+            try:
+                self._export_onnx(model, self.models_dir / "road_segmentation.onnx")
+                self.state.status = TrainingStatus.COMPLETED
+                self.state.message = "Training completed!"
+            except Exception as onnx_error:
+                print(f"[Training] ONNX export failed: {onnx_error}")
+                self.state.status = TrainingStatus.COMPLETED
+                self.state.message = f"Training completed! (ONNX export failed: {onnx_error})"
             
         except Exception as e:
             import traceback
