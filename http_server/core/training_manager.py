@@ -88,8 +88,8 @@ class TrainingManager:
         
         if not road_labels:
             # グローバルなROADマッピングを使用
-            from .road_mapping_store import road_mapping_store
-            road_labels = list(road_mapping_store.get_road_labels())
+            from .road_mapping import get_road_mapping
+            road_labels = get_road_mapping().get_road_labels()
         
         if not road_labels:
             return {"error": "No ROAD labels defined. Annotate road areas first."}
@@ -172,8 +172,13 @@ class TrainingManager:
         }
     
     def _get_road_label_ids(self, road_labels: list) -> set:
-        """ROADラベル名からADE20K IDを取得"""
-        from data.ade20k_labels import ADE20K_LABELS
+        """「ROADラベル名からADE20K IDを取得"""
+        # ADE20Kラベルをローカルで定義（インポート問題回避）
+        ADE20K_LABELS = {
+            3: "floor", 4: "floor", 7: "road", 12: "sidewalk",
+            29: "rug", 30: "field", 47: "sand", 53: "path",
+            55: "runway", 92: "dirt track", 109: "plaything"
+        }
         
         road_label_ids = set()
         for label_name in road_labels:

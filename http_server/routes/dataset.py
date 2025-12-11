@@ -8,7 +8,6 @@ import numpy as np
 
 from ..core.dataset_manager import dataset_manager
 from ..core.camera_manager import camera_manager
-from .oneformer import _latest_seg_masks
 
 router = APIRouter(prefix="/dataset", tags=["dataset"])
 
@@ -89,6 +88,9 @@ def add_image_to_dataset(name: str, camera_id: int, include_segmentation: bool =
         camera_id: カメラID (0 or 1)
         include_segmentation: セグメンテーション結果も保存するか
     """
+    # 循環インポート回避のため関数内でインポート
+    from .oneformer import _latest_seg_masks
+    
     # データセットを選択
     result = dataset_manager.select_dataset(name)
     if "error" in result:
@@ -120,7 +122,8 @@ async def add_image_with_oneformer(name: str, camera_id: int):
         name: データセット名
         camera_id: カメラID (0 or 1)
     """
-    from .oneformer import run_oneformer_internal
+    # 循環インポート回避のため関数内でインポート
+    from .oneformer import run_oneformer_internal, _latest_seg_masks
     
     # データセットを選択
     result = dataset_manager.select_dataset(name)

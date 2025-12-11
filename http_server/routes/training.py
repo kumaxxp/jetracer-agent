@@ -3,9 +3,13 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from ..core.training_manager import training_manager
-
 router = APIRouter(prefix="/training", tags=["training"])
+
+
+def get_training_manager():
+    """遅延ロードでtraining_managerを取得"""
+    from ..core.training_manager import training_manager
+    return training_manager
 
 
 class StartTrainingRequest(BaseModel):
@@ -18,13 +22,13 @@ class StartTrainingRequest(BaseModel):
 @router.get("/status")
 def get_training_status():
     """学習状態を取得"""
-    return training_manager.get_status()
+    return get_training_manager().get_status()
 
 
 @router.post("/prepare/{dataset_name}")
 def prepare_training_data(dataset_name: str):
     """学習データを準備"""
-    result = training_manager.prepare_training_data(dataset_name)
+    result = get_training_manager().prepare_training_data(dataset_name)
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -33,7 +37,7 @@ def prepare_training_data(dataset_name: str):
 @router.post("/start")
 def start_training(request: StartTrainingRequest):
     """学習を開始"""
-    result = training_manager.start_training(
+    result = get_training_manager().start_training(
         dataset_name=request.dataset_name,
         epochs=request.epochs,
         batch_size=request.batch_size,
@@ -47,7 +51,7 @@ def start_training(request: StartTrainingRequest):
 @router.post("/cancel")
 def cancel_training():
     """学習をキャンセル"""
-    result = training_manager.cancel_training()
+    result = get_training_manager().cancel_training()
     if "error" in result:
         raise HTTPException(status_code=400, detail=result["error"])
     return result
@@ -58,7 +62,7 @@ def list_models():
     """保存済みモデル一覧"""
     from pathlib import Path
     
-    models_dir = training_manager.models_dir
+    models_dir = get_training_manager().models_dir
     models = []
     
     for ext in [".pth", ".onnx"]:
