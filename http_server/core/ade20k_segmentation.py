@@ -45,24 +45,11 @@ class ADE20KSegmenter:
             
             self.processor = OneFormerProcessor.from_pretrained(model_name)
             
-            # Load model directly on target device to avoid meta tensor issues
-            # For newer transformers versions, use device_map parameter
-            try:
-                # Try loading with device_map (newer transformers)
-                self.model = OneFormerForUniversalSegmentation.from_pretrained(
-                    model_name,
-                    device_map=self.device,
-                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
-                )
-                logger.info("✓ Model loaded with device_map")
-            except TypeError:
-                # Fallback for older transformers without device_map support
-                self.model = OneFormerForUniversalSegmentation.from_pretrained(model_name)
-                self.model = self.model.to(self.device)
-                logger.info("✓ Model loaded with .to()")
-            
+            # Load model - try multiple methods for compatibility
+            self.model = self._load_model(OneFormerForUniversalSegmentation, model_name)
             self.model.eval()
             logger.info("✓ Model loaded successfully")
+            
         except Exception as e:
             logger.error(f"Failed to load model: {e}")
             raise
@@ -73,6 +60,68 @@ class ADE20KSegmenter:
             int(k) if isinstance(k, str) and k.isdigit() else k: v
             for k, v in config_id2label.items()
         }
+
+    def _load_model(self, model_class, model_name: str):
+        """Load model with multiple fallback strategies."""
+        
+        # Strategy 1: Try with low_cpu_mem_usage=False (avoids meta tensors)
+        try:
+            logger.info("Trying load with low_cpu_mem_usage=False...")
+            model = model_class.from_pretrained(
+                model_name,
+                low_cpu_mem_usage=False
+            )
+            model = model.to(self.device)
+            logger.info("✓ Loaded with low_cpu_mem_usage=False")
+            return model
+        except Exception as e:
+            logger.warning(f"Strategy 1 failed: {e}")
+        
+        # Strategy 2: Try with torch_dtype on CPU first, then move
+        try:
+            logger.info("Trying load on CPU then move...")
+            model = model_class.from_pretrained(
+                model_name,
+                torch_dtype=torch.float32,
+                low_cpu_mem_usage=False
+            )
+            if self.device == "cuda":
+                model = model.half()  # Convert to FP16 for GPU
+            model = model.to(self.device)
+            logger.info("✓ Loaded on CPU then moved to device")
+            return model
+        except Exception as e:
+            logger.warning(f"Strategy 2 failed: {e}")
+        
+        # Strategy 3: Try with accelerate if available
+        try:
+            import accelerate
+            logger.info("Trying load with accelerate...")
+            model = model_class.from_pretrained(
+                model_name,
+                device_map=self.device
+            )
+            logger.info("✓ Loaded with accelerate")
+            return model
+        except ImportError:
+            logger.warning("accelerate not installed")
+        except Exception as e:
+            logger.warning(f"Strategy 3 failed: {e}")
+        
+        # Strategy 4: Basic load (last resort)
+        logger.info("Trying basic load...")
+        model = model_class.from_pretrained(model_name)
+        # Use to_empty() for meta tensors if needed
+        if hasattr(model, '_is_meta') or any(p.is_meta for p in model.parameters()):
+            logger.info("Model has meta tensors, using to_empty()...")
+            model = model.to_empty(device=self.device)
+            # Reload weights
+            state_dict = model_class.from_pretrained(model_name, low_cpu_mem_usage=False).state_dict()
+            model.load_state_dict(state_dict)
+        else:
+            model = model.to(self.device)
+        logger.info("✓ Loaded with basic method")
+        return model
 
     def segment_image(self, image_path: str | Path) -> np.ndarray:
         """
