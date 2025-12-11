@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training
 from .core.camera_manager import camera_manager
 from .core.distance_grid import distance_grid_manager
 from .config import config
@@ -79,6 +79,8 @@ app.include_router(road_mapping.router, tags=["road-mapping"])
 app.include_router(calibration.router, tags=["calibration"])
 app.include_router(navigation.router, tags=["navigation"])
 app.include_router(distance_grid.router, tags=["distance-grid"])
+app.include_router(dataset.router, tags=["dataset"])
+app.include_router(training.router, tags=["training"])
 
 
 @app.get("/")
@@ -109,7 +111,12 @@ def root():
             "GET  /navigation/situation - 状況分析",
             "POST /navigation/update-situation - 状況更新（セグメンテーション実行）",
             "POST /navigation/move - 移動コマンド（モック）",
-            "GET  /navigation/status - ナビゲーション状態"
+            "GET  /navigation/status - ナビゲーション状態",
+            "GET  /dataset/list - データセット一覧",
+            "POST /dataset/create - データセット作成",
+            "POST /dataset/select - データセット選択",
+            "POST /dataset/{name}/add/{camera_id} - 画像追加",
+            "POST /dataset/{name}/add-with-oneformer/{camera_id} - OneFormer付き画像追加"
         ]
     }
 
