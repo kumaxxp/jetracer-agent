@@ -47,13 +47,18 @@ class TrainingManager:
     
     def get_status(self) -> Dict[str, Any]:
         """学習状態を取得"""
+        # float('inf')はJSON変換できないのでNoneに置換
+        best_val = self.state.best_val_loss
+        if best_val == float('inf'):
+            best_val = None
+        
         return {
             "status": self.state.status.value,
             "current_epoch": self.state.current_epoch,
             "total_epochs": self.state.total_epochs,
             "train_loss": self.state.train_loss,
             "val_loss": self.state.val_loss,
-            "best_val_loss": self.state.best_val_loss,
+            "best_val_loss": best_val,
             "start_time": self.state.start_time,
             "elapsed_seconds": self.state.elapsed_seconds,
             "message": self.state.message,
@@ -111,8 +116,8 @@ class TrainingManager:
             if img["has_segmentation"]
         ]
         
-        if len(images_with_seg) < 5:
-            return {"error": f"Not enough images with segmentation ({len(images_with_seg)}). Need at least 5."}
+        if len(images_with_seg) < 4:
+            return {"error": f"Not enough images with segmentation ({len(images_with_seg)}). Need at least 4."}
         
         # Train/Val分割 (80/20)
         import random
