@@ -259,21 +259,39 @@ def _analyze_cell(segmentation: np.ndarray, cell_polygon: List[tuple], road_labe
         road_label_ids: ROADとみなすラベルIDのセット
     
     Returns:
-        road_ratio: 0.0〜1.0
+        road_ratio: 0.0〜1.0、画面外の場合は-1.0
     """
     h, w = segmentation.shape
     
     # ポリゴンをNumPy配列に変換
     pts = np.array(cell_polygon, np.int32)
     
-    # バウンディングボックスを計算
-    x_min = max(0, min(p[0] for p in cell_polygon))
-    x_max = min(w - 1, max(p[0] for p in cell_polygon))
-    y_min = max(0, min(p[1] for p in cell_polygon))
-    y_max = min(h - 1, max(p[1] for p in cell_polygon))
+    # 元のバウンディングボックス（クリップ前）
+    orig_x_min = min(p[0] for p in cell_polygon)
+    orig_x_max = max(p[0] for p in cell_polygon)
+    orig_y_min = min(p[1] for p in cell_polygon)
+    orig_y_max = max(p[1] for p in cell_polygon)
     
+    orig_width = max(1, orig_x_max - orig_x_min)
+    orig_height = max(1, orig_y_max - orig_y_min)
+    
+    # クリップ後のバウンディングボックス
+    x_min = max(0, orig_x_min)
+    x_max = min(w - 1, orig_x_max)
+    y_min = max(0, orig_y_min)
+    y_max = min(h - 1, orig_y_max)
+    
+    # セルが完全に画面外
     if x_min >= x_max or y_min >= y_max:
-        return 0.5  # 無効なセル
+        return -1.0  # 画面外
+    
+    clipped_width = x_max - x_min
+    clipped_height = y_max - y_min
+    
+    # セルの50%以上が画面外の場合は信頼性なし
+    visible_ratio = (clipped_width * clipped_height) / (orig_width * orig_height)
+    if visible_ratio < 0.5:
+        return -1.0  # 信頼性なし
     
     # マスクを作成
     mask = np.zeros((h, w), dtype=np.uint8)
@@ -287,7 +305,7 @@ def _analyze_cell(segmentation: np.ndarray, cell_polygon: List[tuple], road_labe
     cell_pixels = cell_seg[cell_mask == 1]
     
     if len(cell_pixels) == 0:
-        return 0.5  # ピクセルがない場合
+        return -1.0  # ピクセルがない場合
     
     # ROADピクセルの割合を計算
     road_pixels = sum(1 for p in cell_pixels if p in road_label_ids)
