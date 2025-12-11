@@ -26,7 +26,10 @@ def get_yolo():
 def get_segmentation():
     global _segmentation
     if _segmentation is None:
-        _segmentation = SegmentationModel(config.segmentation_model_path)
+        _segmentation = SegmentationModel(
+            config.segmentation_model_path,
+            input_size=config.segmentation_input_size
+        )
     return _segmentation
 
 

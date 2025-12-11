@@ -17,6 +17,10 @@ class ServerConfig:
     # モデルパス
     yolo_model_path: str = "/home/jetson/models/yolov8n.pt"
     segmentation_model_path: str = "/home/jetson/models/road_segmentation.onnx"
+    
+    # セグメンテーション設定
+    segmentation_input_size: tuple = (320, 240)  # (width, height)
+    segmentation_use_tensorrt: bool = True  # TensorRT使用（自動フォールバック）
 
     # 安全制限
     max_throttle: float = 0.5  # 最大50%に制限
