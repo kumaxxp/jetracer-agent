@@ -1,7 +1,7 @@
 """距離グリッドAPI"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import base64
 import cv2
 import numpy as np
@@ -205,6 +205,97 @@ async def get_distance_at_point(camera_id: int, request: DistanceQueryRequest):
     }
 
 
+def _compute_cell_polygons(grid_data: dict) -> List[List[List[tuple]]]:
+    """グリッド線データからセルのポリゴン座標を計算
+    
+    Returns:
+        cell_polygons[row][col] = [(x1,y1), (x2,y2), (x3,y3), (x4,y4)]
+    """
+    h_lines = grid_data.get('horizontal_lines', [])
+    v_lines = grid_data.get('vertical_lines', [])
+    
+    if len(h_lines) < 2 or len(v_lines) < 2:
+        return []
+    
+    cell_polygons = []
+    
+    for row in range(len(h_lines) - 1):
+        row_cells = []
+        h_line_top = h_lines[row]['points']
+        h_line_bottom = h_lines[row + 1]['points']
+        
+        for col in range(len(v_lines) - 1):
+            if col < len(h_line_top) and col + 1 < len(h_line_top):
+                top_left = h_line_top[col]
+                top_right = h_line_top[col + 1]
+            else:
+                continue
+            
+            if col < len(h_line_bottom) and col + 1 < len(h_line_bottom):
+                bottom_left = h_line_bottom[col]
+                bottom_right = h_line_bottom[col + 1]
+            else:
+                continue
+            
+            cell = [
+                (int(top_left[0]), int(top_left[1])),
+                (int(top_right[0]), int(top_right[1])),
+                (int(bottom_right[0]), int(bottom_right[1])),
+                (int(bottom_left[0]), int(bottom_left[1]))
+            ]
+            row_cells.append(cell)
+        
+        cell_polygons.append(row_cells)
+    
+    return cell_polygons
+
+
+def _analyze_cell(segmentation: np.ndarray, cell_polygon: List[tuple], road_label_ids: set) -> float:
+    """セル内のROAD比率を計算
+    
+    Args:
+        segmentation: セグメンテーションマスク (H, W)
+        cell_polygon: セルの4頂点座標
+        road_label_ids: ROADとみなすラベルIDのセット
+    
+    Returns:
+        road_ratio: 0.0〜1.0
+    """
+    h, w = segmentation.shape
+    
+    # ポリゴンをNumPy配列に変換
+    pts = np.array(cell_polygon, np.int32)
+    
+    # バウンディングボックスを計算
+    x_min = max(0, min(p[0] for p in cell_polygon))
+    x_max = min(w - 1, max(p[0] for p in cell_polygon))
+    y_min = max(0, min(p[1] for p in cell_polygon))
+    y_max = min(h - 1, max(p[1] for p in cell_polygon))
+    
+    if x_min >= x_max or y_min >= y_max:
+        return 0.5  # 無効なセル
+    
+    # マスクを作成
+    mask = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(mask, [pts], 1)
+    
+    # セル領域のピクセルを抽出
+    cell_mask = mask[y_min:y_max+1, x_min:x_max+1]
+    cell_seg = segmentation[y_min:y_max+1, x_min:x_max+1]
+    
+    # セル内のピクセルのみを対象
+    cell_pixels = cell_seg[cell_mask == 1]
+    
+    if len(cell_pixels) == 0:
+        return 0.5  # ピクセルがない場合
+    
+    # ROADピクセルの割合を計算
+    road_pixels = sum(1 for p in cell_pixels if p in road_label_ids)
+    road_ratio = road_pixels / len(cell_pixels)
+    
+    return float(road_ratio)
+
+
 @router.get("/{camera_id}/analyze-segmentation")
 async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False):
     """セグメンテーション結果をグリッドで分析
@@ -246,10 +337,29 @@ async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False
         config = distance_grid_manager.get_config(camera_id)
         grid_data = distance_grid_manager.compute_grid_lines(camera_id)
         
-        # 各奥行きラインでROAD割合を計算
-        depth_analysis = []
         h, w = segmentation.shape
         
+        # ========== セル単位の分析（新機能）==========
+        cell_polygons = _compute_cell_polygons(grid_data)
+        cell_analysis = []
+        
+        for row, row_cells in enumerate(cell_polygons):
+            row_data = []
+            for col, cell_polygon in enumerate(row_cells):
+                road_ratio = _analyze_cell(segmentation, cell_polygon, road_label_ids)
+                row_data.append(road_ratio)
+            cell_analysis.append(row_data)
+        
+        num_rows = len(cell_analysis)
+        num_cols = len(cell_analysis[0]) if cell_analysis else 0
+        print(f"[DistanceGrid] Cell analysis: {num_rows} rows x {num_cols} cols")
+        
+        # デバッグ出力
+        for i, row in enumerate(cell_analysis):
+            print(f"[DistanceGrid]   Row {i}: {[f'{v:.2f}' for v in row]}")
+        
+        # ========== 従来の行/列分析（後方互換性のため維持）==========
+        depth_analysis = []
         for line_data in grid_data["horizontal_lines"]:
             depth_m = line_data["depth_m"]
             points = line_data["points"]
@@ -272,7 +382,6 @@ async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False
                     "pixel_y": y_idx
                 })
         
-        # 左右のROAD分布を分析
         lateral_analysis = []
         for line_data in grid_data["vertical_lines"]:
             offset_m = line_data["offset_m"]
@@ -297,17 +406,20 @@ async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False
                 })
         
         # 走行可能な方向を推定
-        navigation_hint = _compute_navigation_hint(depth_analysis, lateral_analysis)
+        navigation_hint = _compute_navigation_hint(depth_analysis, lateral_analysis, cell_analysis)
         
         return {
             "camera_id": camera_id,
+            "cell_analysis": cell_analysis,  # 新機能: セル単位の分析結果
             "depth_analysis": depth_analysis,
             "lateral_analysis": lateral_analysis,
             "navigation_hint": navigation_hint,
             "road_labels": list(road_labels),
             "grid_config": {
                 "depth_range_m": [config.grid_depth_min_m, config.grid_depth_max_m],
-                "width_m": config.grid_width_m
+                "width_m": config.grid_width_m,
+                "num_rows": num_rows,
+                "num_cols": num_cols
             },
             "process_time_ms": seg_result.get("process_time_ms", 0)
         }
@@ -321,7 +433,7 @@ async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _compute_navigation_hint(depth_analysis: list, lateral_analysis: list) -> Dict[str, Any]:
+def _compute_navigation_hint(depth_analysis: list, lateral_analysis: list, cell_analysis: list = None) -> Dict[str, Any]:
     """走行可能な方向のヒントを計算"""
     hint = {
         "forward_clear": False,
@@ -347,7 +459,40 @@ def _compute_navigation_hint(depth_analysis: list, lateral_analysis: list) -> Di
     hint["max_clear_distance_m"] = max_clear_distance
     hint["forward_clear"] = max_clear_distance >= 0.5
     
-    if lateral_analysis:
+    # セル分析がある場合はそれを使用
+    if cell_analysis and len(cell_analysis) > 0 and len(cell_analysis[0]) > 0:
+        num_cols = len(cell_analysis[0])
+        center_col = num_cols // 2
+        
+        # 各列の通行可能性（全行の平均）
+        col_scores = []
+        for col in range(num_cols):
+            col_sum = sum(row[col] for row in cell_analysis if col < len(row))
+            col_avg = col_sum / len(cell_analysis) if cell_analysis else 0
+            col_scores.append(col_avg)
+        
+        # 最も通行可能な列を見つける
+        best_col = center_col
+        best_score = col_scores[center_col] if center_col < len(col_scores) else 0
+        for col, score in enumerate(col_scores):
+            if score > best_score:
+                best_score = score
+                best_col = col
+        
+        # 方向を決定
+        if best_score >= road_threshold:
+            if best_col < center_col - 1:
+                hint["recommended_direction"] = "left"
+            elif best_col > center_col + 1:
+                hint["recommended_direction"] = "right"
+            else:
+                hint["recommended_direction"] = "forward"
+            hint["confidence"] = best_score
+        else:
+            hint["recommended_direction"] = "stop"
+            hint["confidence"] = 1.0 - best_score
+    
+    elif lateral_analysis:
         left_count = sum(1 for l in lateral_analysis if l["offset_m"] < 0)
         right_count = sum(1 for l in lateral_analysis if l["offset_m"] > 0)
         
