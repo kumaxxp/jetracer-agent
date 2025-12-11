@@ -33,9 +33,9 @@ class ADE20KSegmenter:
 
         # Determine device
         if device is None:
-            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
         else:
-            self.device = torch.device(device)
+            self.device = device
 
         logger.info(f"Using device: {self.device}")
 
@@ -44,8 +44,23 @@ class ADE20KSegmenter:
             from transformers import OneFormerProcessor, OneFormerForUniversalSegmentation
             
             self.processor = OneFormerProcessor.from_pretrained(model_name)
-            self.model = OneFormerForUniversalSegmentation.from_pretrained(model_name)
-            self.model.to(self.device)
+            
+            # Load model directly on target device to avoid meta tensor issues
+            # For newer transformers versions, use device_map parameter
+            try:
+                # Try loading with device_map (newer transformers)
+                self.model = OneFormerForUniversalSegmentation.from_pretrained(
+                    model_name,
+                    device_map=self.device,
+                    torch_dtype=torch.float16 if self.device == "cuda" else torch.float32
+                )
+                logger.info("✓ Model loaded with device_map")
+            except TypeError:
+                # Fallback for older transformers without device_map support
+                self.model = OneFormerForUniversalSegmentation.from_pretrained(model_name)
+                self.model = self.model.to(self.device)
+                logger.info("✓ Model loaded with .to()")
+            
             self.model.eval()
             logger.info("✓ Model loaded successfully")
         except Exception as e:
