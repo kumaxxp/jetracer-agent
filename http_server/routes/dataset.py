@@ -5,6 +5,7 @@ from typing import Optional, List
 import base64
 import cv2
 import numpy as np
+import traceback
 
 from ..core.dataset_manager import dataset_manager
 from ..core.camera_manager import camera_manager
@@ -88,71 +89,102 @@ def add_image_to_dataset(name: str, camera_id: int, include_segmentation: bool =
         camera_id: カメラID (0 or 1)
         include_segmentation: セグメンテーション結果も保存するか
     """
-    # 循環インポート回避のため関数内でインポート
-    from .oneformer import _latest_seg_masks
-    
-    # データセットを選択
-    result = dataset_manager.select_dataset(name)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    
-    # カメラから画像取得
-    frame = camera_manager.read(camera_id)
-    if frame is None:
-        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
-    
-    # セグメンテーションマスク（あれば）
-    seg_mask = None
-    if include_segmentation and camera_id in _latest_seg_masks:
-        seg_mask = _latest_seg_masks[camera_id]
-    
-    # データセットに追加
-    result = dataset_manager.add_image(camera_id, frame, seg_mask)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    
-    return result
+    try:
+        # 循環インポート回避のため関数内でインポート
+        from .oneformer import _latest_seg_masks
+        
+        # データセットを選択
+        result = dataset_manager.select_dataset(name)
+        if "error" in result:
+            raise HTTPException(status_code=404, detail=result["error"])
+        
+        # カメラから画像取得
+        frame = camera_manager.read(camera_id)
+        if frame is None:
+            raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
+        
+        # セグメンテーションマスク（あれば）
+        seg_mask = None
+        if include_segmentation and camera_id in _latest_seg_masks:
+            seg_mask = _latest_seg_masks[camera_id]
+        
+        # データセットに追加
+        result = dataset_manager.add_image(camera_id, frame, seg_mask)
+        if "error" in result:
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[Dataset] add_image_to_dataset error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/{name}/add-with-oneformer/{camera_id}")
-async def add_image_with_oneformer(name: str, camera_id: int):
+def add_image_with_oneformer(name: str, camera_id: int):
     """OneFormerでセグメンテーションしてからデータセットに追加
     
     Args:
         name: データセット名
         camera_id: カメラID (0 or 1)
     """
-    # 循環インポート回避のため関数内でインポート
-    from .oneformer import run_oneformer_internal, _latest_seg_masks
-    
-    # データセットを選択
-    result = dataset_manager.select_dataset(name)
-    if "error" in result:
-        raise HTTPException(status_code=404, detail=result["error"])
-    
-    # カメラから画像取得
-    frame = camera_manager.read(camera_id)
-    if frame is None:
-        raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
-    
-    # OneFormerでセグメンテーション実行
     try:
+        # 循環インポート回避のため関数内でインポート
+        from .oneformer import run_oneformer_internal, _latest_seg_masks
+        
+        print(f"[Dataset] add_image_with_oneformer: name={name}, camera_id={camera_id}")
+        
+        # データセットを選択
+        result = dataset_manager.select_dataset(name)
+        if "error" in result:
+            print(f"[Dataset] select_dataset error: {result['error']}")
+            raise HTTPException(status_code=404, detail=result["error"])
+        
+        print(f"[Dataset] Dataset selected: {name}")
+        
+        # カメラから画像取得
+        frame = camera_manager.read(camera_id)
+        if frame is None:
+            print(f"[Dataset] Camera {camera_id} not available")
+            raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
+        
+        print(f"[Dataset] Got frame: {frame.shape}")
+        
+        # OneFormerでセグメンテーション実行
+        print(f"[Dataset] Running OneFormer...")
         seg_result = run_oneformer_internal(camera_id, highlight_road=False)
+        
+        if "error" in seg_result:
+            print(f"[Dataset] OneFormer error: {seg_result['error']}")
+            raise HTTPException(status_code=500, detail=f"OneFormer error: {seg_result['error']}")
+        
+        print(f"[Dataset] OneFormer done: {seg_result.get('num_classes', 0)} classes")
+        
+        # セグメンテーションマスク取得
+        seg_mask = _latest_seg_masks.get(camera_id)
+        print(f"[Dataset] seg_mask: {seg_mask.shape if seg_mask is not None else None}")
+        
+        # データセットに追加
+        print(f"[Dataset] Adding to dataset...")
+        result = dataset_manager.add_image(camera_id, frame, seg_mask)
+        if "error" in result:
+            print(f"[Dataset] add_image error: {result['error']}")
+            raise HTTPException(status_code=400, detail=result["error"])
+        
+        result["segmentation_time_ms"] = seg_result.get("segmentation_time_ms", 0)
+        result["num_classes"] = seg_result.get("num_classes", 0)
+        
+        print(f"[Dataset] Success: image_count={result.get('image_count', 0)}")
+        return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OneFormer error: {e}")
-    
-    # セグメンテーションマスク取得
-    seg_mask = _latest_seg_masks.get(camera_id)
-    
-    # データセットに追加
-    result = dataset_manager.add_image(camera_id, frame, seg_mask)
-    if "error" in result:
-        raise HTTPException(status_code=400, detail=result["error"])
-    
-    result["segmentation_time_ms"] = seg_result.get("segmentation_time_ms", 0)
-    result["num_classes"] = seg_result.get("num_classes", 0)
-    
-    return result
+        print(f"[Dataset] add_image_with_oneformer error: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.put("/{name}/road-mapping")
