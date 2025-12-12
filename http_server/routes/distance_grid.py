@@ -631,15 +631,27 @@ def _run_lightweight_onnx(frame: np.ndarray, model_path) -> tuple:
     # OpenCV DNNでロード
     net = cv2.dnn.readNetFromONNX(str(model_path))
     
-    # CUDAが使用可能ならGPU、なければCPU
+    # CUDAが使用可能か確認して設定
+    backend = "CPU"
     try:
-        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
-        backend = "CUDA_FP16"
-    except:
+        # OpenCVがCUDAサポートでビルドされているか確認
+        backends = cv2.dnn.getAvailableBackends()
+        cuda_available = any(
+            b[0] == cv2.dnn.DNN_BACKEND_CUDA 
+            for b in backends
+        )
+        
+        if cuda_available:
+            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
+            backend = "CUDA"
+        else:
+            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
+            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    except Exception as e:
+        print(f"[Lightweight] CUDA setup failed: {e}, using CPU")
         net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
         net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        backend = "CPU"
     
     # 前処理（ImageNet標準化）
     input_size = (320, 240)
