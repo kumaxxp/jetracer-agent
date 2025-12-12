@@ -137,6 +137,13 @@ def run_oneformer_internal(camera_id: int = 0, highlight_road: bool = False) -> 
     """
     global _latest_seg_masks, _latest_seg_sizes
     
+    import torch
+    
+    # CUDAキャッシュをクリアしてリソース競合を防止
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
+        torch.cuda.empty_cache()
+    
     start_time = time.time()
     
     # カメラからフレーム取得
