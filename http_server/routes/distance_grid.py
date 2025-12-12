@@ -483,18 +483,18 @@ async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = Fal
         # 軽量モデルのパス
         model_dir = Path.home() / "models"
         
-        # ONNXモデルを優先、なければPyTorchモデル
-        onnx_path = model_dir / "road_segmentation.onnx"
+        # PyTorchモデルを優先（CUDAで高速）、なければONNX（CPUで低速）
         pth_path = model_dir / "best_model.pth"
+        onnx_path = model_dir / "road_segmentation.onnx"
         
         start_time = time.time()
         
-        if onnx_path.exists():
-            # ONNX推論
-            segmentation, inference_time, model_type = _run_lightweight_onnx(frame, onnx_path)
-        elif pth_path.exists():
-            # PyTorch推論
+        if pth_path.exists():
+            # PyTorch推論（CUDA対応）
             segmentation, inference_time, model_type = _run_lightweight_pth(frame, pth_path)
+        elif onnx_path.exists():
+            # ONNX推論（CPUフォールバック）
+            segmentation, inference_time, model_type = _run_lightweight_onnx(frame, onnx_path)
         else:
             raise HTTPException(
                 status_code=404, 
