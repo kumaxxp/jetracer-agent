@@ -16,7 +16,7 @@ async def lifespan(app: FastAPI):
     # 起動時
     print("[Server] Starting JetRacer HTTP API Server...")
     
-    # cuDNN設定（複数モデルの競合を防歐）
+    # cuDNN設定（複数モデルの競合を防止）
     try:
         import torch
         if torch.cuda.is_available():
@@ -27,6 +27,48 @@ async def lifespan(app: FastAPI):
             print("[Server] cuDNN: benchmark=False, deterministic=True")
     except Exception as e:
         print(f"[Server] Warning: Could not configure cuDNN: {e}")
+    
+    # 重要: 両方のモデルを先にロード（CUDAストリーム競合防止）
+    print("[Server] Pre-loading models to avoid CUDA stream conflicts...")
+    try:
+        # 1. OneFormerモデルをロード
+        print("[Server] Loading OneFormer model...")
+        from .routes.oneformer import get_segmenter
+        get_segmenter()
+        print("[Server] OneFormer model loaded")
+        
+        # 2. Lightweightモデルをロード
+        print("[Server] Loading Lightweight model...")
+        from pathlib import Path
+        import torch
+        model_path = Path.home() / "models" / "best_model.pth"
+        if model_path.exists():
+            from .routes.distance_grid import _lightweight_model_cache
+            import segmentation_models_pytorch as smp
+            
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model = smp.DeepLabV3Plus(
+                encoder_name="mobilenet_v2",
+                encoder_weights=None,
+                in_channels=3,
+                classes=3
+            )
+            model.load_state_dict(torch.load(str(model_path), map_location=device))
+            model.to(device)
+            model.eval()
+            
+            _lightweight_model_cache["model"] = model
+            _lightweight_model_cache["device"] = str(device)
+            _lightweight_model_cache["path"] = str(model_path)
+            print(f"[Server] Lightweight model loaded on {device}")
+        else:
+            print(f"[Server] Lightweight model not found at {model_path}")
+        
+        print("[Server] All models pre-loaded successfully")
+    except Exception as e:
+        print(f"[Server] Warning: Model pre-loading failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     # 複数カメラを起動（カメラ0, 1）
     results = camera_manager.start_all(
