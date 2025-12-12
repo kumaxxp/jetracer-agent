@@ -121,7 +121,7 @@ class CameraInstance:
 
     def _get_capture_params_for_mode(self, sensor_mode: Optional[int], target_fps: int) -> tuple:
         """センサーモードに応じたキャプチャパラメータを返す"""
-        # モード別のデフォルト設定
+        # モード別のデフォルト設定 (width, height, max_fps)
         mode_params = {
             0: (3280, 2464, 21),
             1: (3280, 1848, 28),
@@ -132,7 +132,9 @@ class CameraInstance:
         
         if sensor_mode is not None and sensor_mode in mode_params:
             w, h, max_fps = mode_params[sensor_mode]
-            return (w, h, min(target_fps, max_fps))
+            # モードが明示的に指定された場合は、そのモードの最大FPSを使用
+            # （例: モード4は60fpsで動作すべき）
+            return (w, h, max_fps)
         
         # 自動選択: ターゲットFPSに基づいて最適なモードを選択
         if target_fps > 30:
