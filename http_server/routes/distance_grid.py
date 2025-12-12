@@ -631,6 +631,17 @@ def _run_lightweight_onnx(frame: np.ndarray, model_path) -> tuple:
     # OpenCV DNNでロード
     net = cv2.dnn.readNetFromONNX(str(model_path))
     
+    # CUDAバックエンドを設定（setInputの前に！）
+    backend = "CPU"
+    try:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+        backend = "CUDA_FP16"
+    except Exception as e:
+        print(f"[Lightweight] CUDA setup failed: {e}, using CPU")
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+    
     # 前処理（ImageNet標準化）
     input_size = (320, 240)
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -643,21 +654,10 @@ def _run_lightweight_onnx(frame: np.ndarray, model_path) -> tuple:
     
     # CHW形式に変換してバッチ次元追加
     blob = img.transpose(2, 0, 1).reshape(1, 3, 240, 320).astype(np.float32)
-    net.setInput(blob)
     
-    # CUDAで試行、失敗したらCPUにフォールバック
-    backend = "CPU"
-    try:
-        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
-        output = net.forward()
-        backend = "CUDA_FP16"
-    except Exception as e:
-        print(f"[Lightweight] CUDA failed: {e}, retrying with CPU")
-        # CPUで再試行
-        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
-        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-        output = net.forward()
+    # 推論
+    net.setInput(blob)
+    output = net.forward()
     
     inference_time = (time.time() - start) * 1000
     
