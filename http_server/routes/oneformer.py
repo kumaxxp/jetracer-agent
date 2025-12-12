@@ -54,15 +54,31 @@ def unload_segmenter():
     global _segmenter
     if _segmenter is not None:
         print("[OneFormer] Unloading model to free CUDA memory")
-        _segmenter = None
         
         import torch
+        import gc
+        
+        # モデルをCPUに移動してから削除（CUDAハンドルを正しく解放）
+        try:
+            if hasattr(_segmenter, 'model') and _segmenter.model is not None:
+                _segmenter.model.cpu()
+                del _segmenter.model
+            if hasattr(_segmenter, 'processor'):
+                del _segmenter.processor
+        except Exception as e:
+            print(f"[OneFormer] Error during cleanup: {e}")
+        
+        _segmenter = None
+        
+        # ガベージコレクションを先に実行
+        gc.collect()
+        
+        # CUDAキャッシュをクリア
         if torch.cuda.is_available():
             torch.cuda.synchronize()
             torch.cuda.empty_cache()
         
-        import gc
-        gc.collect()
+        print("[OneFormer] Model unloaded successfully")
 
 
 def create_stripe_pattern(height: int, width: int, stripe_width: int = 10) -> np.ndarray:

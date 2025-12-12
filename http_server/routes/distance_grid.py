@@ -696,13 +696,29 @@ def _clear_lightweight_cache():
     global _lightweight_model_cache
     if _lightweight_model_cache["model"] is not None:
         print("[Lightweight] Clearing model cache")
+        
+        import torch
+        import gc
+        
+        # モデルをCPUに移動してから削除（CUDAハンドルを正しく解放）
+        try:
+            _lightweight_model_cache["model"].cpu()
+        except Exception as e:
+            print(f"[Lightweight] Error moving model to CPU: {e}")
+        
         _lightweight_model_cache["model"] = None
         _lightweight_model_cache["device"] = None
         _lightweight_model_cache["path"] = None
         
-        import torch
+        # ガベージコレクションを先に実行
+        gc.collect()
+        
+        # CUDAキャッシュをクリア
         if torch.cuda.is_available():
+            torch.cuda.synchronize()
             torch.cuda.empty_cache()
+        
+        print("[Lightweight] Model cache cleared successfully")
 
 
 def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
