@@ -49,32 +49,13 @@ async def lifespan(app: FastAPI):
         get_segmenter()
         print("[Server] OneFormer model loaded")
         
-        # 2. Lightweightモデルをロード
+        # 2. Lightweightモデルをロード（新しいモジュール）
         print("[Server] Loading Lightweight model...")
-        from pathlib import Path
-        import torch
-        model_path = Path.home() / "models" / "best_model.pth"
-        if model_path.exists():
-            from .routes.distance_grid import _lightweight_model_cache
-            import segmentation_models_pytorch as smp
-            
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            model = smp.DeepLabV3Plus(
-                encoder_name="mobilenet_v2",
-                encoder_weights=None,
-                in_channels=3,
-                classes=3
-            )
-            model.load_state_dict(torch.load(str(model_path), map_location=device))
-            model.to(device)
-            model.eval()
-            
-            _lightweight_model_cache["model"] = model
-            _lightweight_model_cache["device"] = str(device)
-            _lightweight_model_cache["path"] = str(model_path)
-            print(f"[Server] Lightweight model loaded on {device}")
+        from .core.lightweight_segmentation import lightweight_segmentation
+        if lightweight_segmentation.load():
+            print(f"[Server] Lightweight model loaded on {lightweight_segmentation._device}")
         else:
-            print(f"[Server] Lightweight model not found at {model_path}")
+            print("[Server] Lightweight model not found, skipping")
         
         print("[Server] All models pre-loaded successfully")
     except Exception as e:
