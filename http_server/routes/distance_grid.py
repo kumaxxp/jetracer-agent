@@ -459,8 +459,13 @@ async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False
 
 
 @router.get("/{camera_id}/analyze-segmentation-lightweight")
-async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = False):
+async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = False, show_grid: bool = False):
     """軽量モデル（DeepLabV3+）でセグメンテーション結果をグリッド分析
+    
+    Args:
+        camera_id: カメラID
+        undistort: 歪み補正を適用するか
+        show_grid: グリッドオーバーレイを表示するか（デフォルト: False）
     
     OneFormerより高速（30-50ms）だが精度は若干低い
     """
@@ -580,15 +585,18 @@ async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = Fal
         # オーバーレイ画像作成
         overlay = _create_lightweight_overlay(frame, segmentation)
         
-        # グリッドオーバーレイを追加
-        grid_overlay = distance_grid_manager.draw_grid_overlay(
-            camera_id, overlay,
-            color=(0, 255, 0),
-            thickness=2,
-            show_labels=True
-        )
+        # グリッドオーバーレイを追加（show_grid=Trueの場合のみ）
+        if show_grid:
+            output_image = distance_grid_manager.draw_grid_overlay(
+                camera_id, overlay,
+                color=(0, 255, 0),
+                thickness=2,
+                show_labels=True
+            )
+        else:
+            output_image = overlay
         
-        _, buffer = cv2.imencode('.jpg', grid_overlay, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        _, buffer = cv2.imencode('.jpg', output_image, [cv2.IMWRITE_JPEG_QUALITY, 85])
         overlay_base64 = base64.b64encode(buffer).decode('utf-8')
         
         total_time = (time.time() - start_time) * 1000
