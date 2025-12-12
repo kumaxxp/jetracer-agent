@@ -78,7 +78,7 @@ class SensorCapabilities:
     def __init__(self):
         self._capabilities: Dict[int, List[SensorMode]] = {}
         self._sensor_names: Dict[int, str] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # 再入可能ロックに変更（デッドロック防止）
         self._initialized = False
     
     def probe_sensor(self, camera_id: int = 0, timeout: float = 5.0) -> List[SensorMode]:
