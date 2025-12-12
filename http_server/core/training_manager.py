@@ -178,20 +178,8 @@ class TrainingManager:
     
     def _get_road_label_ids(self, road_labels: list) -> set:
         """「ROADラベル名からADE20K IDを取得"""
-        # ADE20Kラベルをローカルで定義（インポート問題回避）
-        ADE20K_LABELS = {
-            3: "floor", 4: "floor", 7: "road", 12: "sidewalk",
-            29: "rug", 30: "field", 47: "sand", 53: "path",
-            55: "runway", 92: "dirt track", 109: "plaything"
-        }
-        
-        road_label_ids = set()
-        for label_name in road_labels:
-            for lid, lname in ADE20K_LABELS.items():
-                if lname == label_name:
-                    road_label_ids.add(lid)
-                    break
-        return road_label_ids
+        from .ade20k_full_labels import get_road_label_ids
+        return get_road_label_ids(road_labels)
     
     def start_training(
         self,

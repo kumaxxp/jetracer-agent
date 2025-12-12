@@ -322,13 +322,245 @@ def _test_onnx_model(model_path: Path, frame: np.ndarray) -> dict:
     original_base64 = base64.b64encode(orig_buffer).decode('utf-8')
     
     return {
-        "model_name": model_path.name,
-        "model_type": "onnx",
-        "backend": backend,
-        "load_time_ms": round(load_time, 1),
-        "inference_time_ms": round(inference_time, 1),
-        "input_size": list(input_size),
-        "road_percentage": round(road_percentage, 2),
-        "result_base64": result_base64,
-        "original_base64": original_base64
+    "model_name": model_path.name,
+    "model_type": "onnx",
+    "backend": backend,
+    "load_time_ms": round(load_time, 1),
+    "inference_time_ms": round(inference_time, 1),
+    "input_size": list(input_size),
+    "road_percentage": round(road_percentage, 2),
+    "result_base64": result_base64,
+    "original_base64": original_base64
+    }
+
+
+@router.get("/debug/{dataset_name}/masks")
+def get_debug_masks(dataset_name: str, limit: int = 5):
+    """学習データのマスクを確認用に取得
+    
+    Args:
+        dataset_name: データセット名
+        limit: 取得する画像数
+    
+    Returns:
+        images: 元画像、OneFormerマスク、学習用マスクのリスト
+    """
+    import cv2
+    import base64
+    from ..core.dataset_manager import dataset_manager
+    from ..core.ade20k_full_labels import ADE20K_ID_TO_NAME
+    
+    # データセット情報取得
+    info = dataset_manager.get_dataset_info(dataset_name)
+    if "error" in info:
+        raise HTTPException(status_code=404, detail=info["error"])
+    
+    dataset_dir = Path(info["path"])
+    training_data_dir = dataset_dir / "training_data" / "train"
+    
+    # 学習データがない場合
+    if not training_data_dir.exists():
+        raise HTTPException(status_code=400, detail="Training data not prepared. Run 'Start Training' first.")
+    
+    # 画像一覧取得
+    images_result = dataset_manager.get_images(dataset_name)
+    images_with_seg = [
+        img for img in images_result["images"]
+        if img["has_segmentation"]
+    ][:limit]
+    
+    results = []
+    
+    for img_info in images_with_seg:
+        try:
+            img_path = Path(img_info["path"])
+            seg_path = Path(img_info["seg_path"])
+            label_path = training_data_dir / "labels" / f"{img_path.stem}.png"
+            
+            # 元画像
+            original = cv2.imread(str(img_path))
+            if original is None:
+                continue
+            _, orig_buf = cv2.imencode('.jpg', original, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            original_b64 = base64.b64encode(orig_buf).decode('utf-8')
+            
+            # OneFormerマスク（カラー化）
+            seg_mask = cv2.imread(str(seg_path), cv2.IMREAD_GRAYSCALE)
+            if seg_mask is None:
+                continue
+            
+            # OneFormerマスクをカラー化（各クラスに色付け）
+            seg_colored = np.zeros((seg_mask.shape[0], seg_mask.shape[1], 3), dtype=np.uint8)
+            unique_ids = np.unique(seg_mask)
+            for uid in unique_ids:
+                # クラスIDに応じた色を生成
+                np.random.seed(uid)
+                color = np.random.randint(50, 255, 3).tolist()
+                seg_colored[seg_mask == uid] = color
+            
+            _, seg_buf = cv2.imencode('.jpg', seg_colored, [cv2.IMWRITE_JPEG_QUALITY, 80])
+            seg_b64 = base64.b64encode(seg_buf).decode('utf-8')
+            
+            # 学習用マスク（カラー化）
+            label_b64 = None
+            label_stats = None
+            if label_path.exists():
+                label_mask = cv2.imread(str(label_path), cv2.IMREAD_GRAYSCALE)
+                if label_mask is not None:
+                    # 0: 黒, 1: 緑(ROAD), 2: 赤(MYCAR)
+                    label_colored = np.zeros((label_mask.shape[0], label_mask.shape[1], 3), dtype=np.uint8)
+                    label_colored[label_mask == 1] = [0, 255, 0]  # ROAD = 緑
+                    label_colored[label_mask == 2] = [0, 0, 255]  # MYCAR = 赤
+                    
+                    _, label_buf = cv2.imencode('.jpg', label_colored, [cv2.IMWRITE_JPEG_QUALITY, 80])
+                    label_b64 = base64.b64encode(label_buf).decode('utf-8')
+                    
+                    # 統計情報
+                    total = label_mask.size
+                    label_stats = {
+                        "other_pct": round(np.sum(label_mask == 0) / total * 100, 1),
+                        "road_pct": round(np.sum(label_mask == 1) / total * 100, 1),
+                        "mycar_pct": round(np.sum(label_mask == 2) / total * 100, 1),
+                    }
+            
+            # OneFormerマスクのクラス情報
+            class_info = []
+            for uid in sorted(unique_ids):
+                name = ADE20K_ID_TO_NAME.get(uid, f"unknown_{uid}")
+                pct = round(np.sum(seg_mask == uid) / seg_mask.size * 100, 1)
+                class_info.append({"id": int(uid), "name": name, "percentage": pct})
+            
+            results.append({
+                "filename": img_path.name,
+                "original_base64": original_b64,
+                "seg_base64": seg_b64,
+                "label_base64": label_b64,
+                "label_stats": label_stats,
+                "class_info": class_info,
+            })
+            
+        except Exception as e:
+            print(f"[Debug] Error processing {img_info['path']}: {e}")
+            continue
+    
+    # ROADマッピング情報も返す
+    from ..core.road_mapping import get_road_mapping
+    road_mapping = get_road_mapping()
+    
+    return {
+        "dataset": dataset_name,
+        "count": len(results),
+        "road_labels": road_mapping.get_road_labels(),
+        "images": results
+    }
+
+
+@router.post("/preview-mask")
+def preview_training_mask(dataset_name: str, image_name: str):
+    """指定画像の学習用マスクをプレビュー（学習前に確認）
+    
+    Args:
+        dataset_name: データセット名
+        image_name: 画像ファイル名
+    
+    Returns:
+        元画像、OneFormerマスク、生成されるROADマスクのプレビュー
+    """
+    import cv2
+    import base64
+    from ..core.dataset_manager import dataset_manager
+    from ..core.road_mapping import get_road_mapping
+    from ..core.ade20k_full_labels import get_road_label_ids, ADE20K_ID_TO_NAME
+    
+    # データセット情報取得
+    info = dataset_manager.get_dataset_info(dataset_name)
+    if "error" in info:
+        raise HTTPException(status_code=404, detail=info["error"])
+    
+    dataset_dir = Path(info["path"])
+    
+    # 画像を探す
+    img_path = None
+    seg_path = None
+    for cam_id in [0, 1]:
+        candidate = dataset_dir / "images" / f"camera_{cam_id}" / image_name
+        if candidate.exists():
+            img_path = candidate
+            seg_path = dataset_dir / "segmentation" / f"{candidate.stem}_seg.png"
+            break
+    
+    if img_path is None or not img_path.exists():
+        raise HTTPException(status_code=404, detail=f"Image not found: {image_name}")
+    
+    if not seg_path.exists():
+        raise HTTPException(status_code=400, detail=f"Segmentation not found for {image_name}")
+    
+    # ROADマッピング取得
+    road_mapping = get_road_mapping()
+    road_labels = road_mapping.get_road_labels()
+    road_label_ids = get_road_label_ids(road_labels)
+    
+    # 元画像
+    original = cv2.imread(str(img_path))
+    _, orig_buf = cv2.imencode('.jpg', original, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    original_b64 = base64.b64encode(orig_buf).decode('utf-8')
+    
+    # OneFormerマスク
+    seg_mask = cv2.imread(str(seg_path), cv2.IMREAD_GRAYSCALE)
+    
+    # OneFormerマスクをカラー化
+    seg_colored = np.zeros((seg_mask.shape[0], seg_mask.shape[1], 3), dtype=np.uint8)
+    unique_ids = np.unique(seg_mask)
+    for uid in unique_ids:
+        np.random.seed(uid)
+        color = np.random.randint(50, 255, 3).tolist()
+        seg_colored[seg_mask == uid] = color
+    
+    _, seg_buf = cv2.imencode('.jpg', seg_colored, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    seg_b64 = base64.b64encode(seg_buf).decode('utf-8')
+    
+    # ROADマスクを生成（プレビュー）
+    road_mask = np.zeros_like(seg_mask, dtype=np.uint8)
+    for label_id in road_label_ids:
+        road_mask[seg_mask == label_id] = 1  # ROAD
+    
+    # ROADマスクをカラー化
+    road_colored = np.zeros((road_mask.shape[0], road_mask.shape[1], 3), dtype=np.uint8)
+    road_colored[road_mask == 1] = [0, 255, 0]  # ROAD = 緑
+    
+    _, road_buf = cv2.imencode('.jpg', road_colored, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    road_b64 = base64.b64encode(road_buf).decode('utf-8')
+    
+    # オーバーレイ画像も作成
+    overlay = cv2.addWeighted(original, 0.6, road_colored, 0.4, 0)
+    _, overlay_buf = cv2.imencode('.jpg', overlay, [cv2.IMWRITE_JPEG_QUALITY, 80])
+    overlay_b64 = base64.b64encode(overlay_buf).decode('utf-8')
+    
+    # クラス情報
+    class_info = []
+    for uid in sorted(unique_ids):
+        name = ADE20K_ID_TO_NAME.get(uid, f"unknown_{uid}")
+        pct = round(np.sum(seg_mask == uid) / seg_mask.size * 100, 1)
+        is_road = uid in road_label_ids
+        class_info.append({
+            "id": int(uid), 
+            "name": name, 
+            "percentage": pct,
+            "is_road": is_road
+        })
+    
+    # 統計
+    total = road_mask.size
+    road_pct = round(np.sum(road_mask == 1) / total * 100, 1)
+    
+    return {
+        "image_name": image_name,
+        "original_base64": original_b64,
+        "seg_base64": seg_b64,
+        "road_mask_base64": road_b64,
+        "overlay_base64": overlay_b64,
+        "road_labels": road_labels,
+        "road_label_ids": list(road_label_ids),
+        "road_percentage": road_pct,
+        "class_info": class_info,
     }
