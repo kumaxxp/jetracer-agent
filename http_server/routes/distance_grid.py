@@ -675,35 +675,61 @@ def _run_lightweight_onnx(frame: np.ndarray, model_path) -> tuple:
     return mask, inference_time, f"ONNX ({backend})"
 
 
+# 軽量モデルのキャッシュ
+_lightweight_model_cache = {
+    "model": None,
+    "device": None,
+    "path": None
+}
+
+
 def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
-    """PyTorch軽量モデルで推論"""
+    """PyTorch軽量モデルで推論（モデルキャッシュ付き）"""
     import torch
+    global _lightweight_model_cache
     
     start = time.time()
     
     # デバイス設定
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    # モデルロード
-    try:
-        import segmentation_models_pytorch as smp
-        model = smp.DeepLabV3Plus(
-            encoder_name="mobilenet_v2",
-            encoder_weights=None,
-            in_channels=3,
-            classes=3
-        )
-    except ImportError:
-        raise HTTPException(
-            status_code=500, 
-            detail="segmentation_models_pytorch not installed"
-        )
+    # キャッシュからモデルを取得、または新規ロード
+    model_path_str = str(model_path)
+    if (_lightweight_model_cache["model"] is None or 
+        _lightweight_model_cache["path"] != model_path_str or
+        _lightweight_model_cache["device"] != device):
+        
+        print(f"[Lightweight] Loading model from {model_path_str}...")
+        try:
+            import segmentation_models_pytorch as smp
+            model = smp.DeepLabV3Plus(
+                encoder_name="mobilenet_v2",
+                encoder_weights=None,
+                in_channels=3,
+                classes=3
+            )
+        except ImportError:
+            raise HTTPException(
+                status_code=500, 
+                detail="segmentation_models_pytorch not installed"
+            )
+        
+        model.load_state_dict(torch.load(model_path_str, map_location=device))
+        model.to(device)
+        model.eval()
+        
+        # キャッシュに保存
+        _lightweight_model_cache["model"] = model
+        _lightweight_model_cache["device"] = device
+        _lightweight_model_cache["path"] = model_path_str
+        print(f"[Lightweight] Model loaded and cached on {device}")
+    else:
+        model = _lightweight_model_cache["model"]
     
-    model.load_state_dict(torch.load(str(model_path), map_location=device))
-    model.to(device)
-    model.eval()
+    load_time = (time.time() - start) * 1000
     
     # 前処理
+    infer_start = time.time()
     input_size = (320, 240)
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
     img = cv2.resize(img, input_size)
@@ -724,7 +750,7 @@ def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
         if torch.cuda.is_available():
             torch.cuda.synchronize()
     
-    inference_time = (time.time() - start) * 1000
+    inference_time = (time.time() - infer_start) * 1000
     
     # 後処理
     mask = torch.argmax(output, dim=1).squeeze().cpu().numpy().astype(np.uint8)
