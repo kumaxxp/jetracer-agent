@@ -631,28 +631,6 @@ def _run_lightweight_onnx(frame: np.ndarray, model_path) -> tuple:
     # OpenCV DNNでロード
     net = cv2.dnn.readNetFromONNX(str(model_path))
     
-    # CUDAが使用可能か確認して設定
-    backend = "CPU"
-    try:
-        # OpenCVがCUDAサポートでビルドされているか確認
-        backends = cv2.dnn.getAvailableBackends()
-        cuda_available = any(
-            b[0] == cv2.dnn.DNN_BACKEND_CUDA 
-            for b in backends
-        )
-        
-        if cuda_available:
-            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
-            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA)
-            backend = "CUDA"
-        else:
-            net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
-            net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-    except Exception as e:
-        print(f"[Lightweight] CUDA setup failed: {e}, using CPU")
-        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
-        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
-    
     # 前処理（ImageNet標準化）
     input_size = (320, 240)
     img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -664,11 +642,22 @@ def _run_lightweight_onnx(frame: np.ndarray, model_path) -> tuple:
     img = (img - mean) / std
     
     # CHW形式に変換してバッチ次元追加
-    blob = np.expand_dims(img.transpose(2, 0, 1), 0).astype(np.float32)
-    
-    # 推論
+    blob = img.transpose(2, 0, 1).reshape(1, 3, 240, 320).astype(np.float32)
     net.setInput(blob)
-    output = net.forward()
+    
+    # CUDAで試行、失敗したらCPUにフォールバック
+    backend = "CPU"
+    try:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+        output = net.forward()
+        backend = "CUDA_FP16"
+    except Exception as e:
+        print(f"[Lightweight] CUDA failed: {e}, retrying with CPU")
+        # CPUで再試行
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        output = net.forward()
     
     inference_time = (time.time() - start) * 1000
     
