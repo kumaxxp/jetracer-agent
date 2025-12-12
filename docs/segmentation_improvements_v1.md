@@ -14,6 +14,7 @@
 2. 学習データ検証機能の追加
 3. 軽量モデル（DeepLabV3+）によるリアルタイム推論の実装
 4. モデルキャッシュによる推論高速化
+5. **CUDAストリーム競合問題の解決（モデルプリロード）**
 
 ---
 
@@ -295,7 +296,187 @@ rm -rf ~/jetracer_data/datasets/{dataset_name}/training_data
 
 ---
 
-## 8. 今後の課題
+## 10. CUDAストリーム競合問題と解決策
+
+### 10.1 問題の発生
+
+**症状:**
+OneFormerとLightweightモデルを交互に使用すると、CUDAエラーが発生して推論が失敗する。
+
+**エラーメッセージ:**
+```
+RuntimeError: CUDA driver error: invalid resource handle
+RuntimeError: cuDNN error: CUDNN_STATUS_BAD_PARAM_STREAM_MISMATCH
+```
+
+**再現手順:**
+1. サーバー起動（モデル未ロード）
+2. Cameras OneFormer → ✅ 成功（OneFormerがロードされる）
+3. AI Decision Lightweight → ❌ エラー（Lightweightロード時に競合）
+
+### 10.2 原因分析
+
+JetsonのCUDAドライバには、複数のPyTorchモデルを動的にロードする際の制限がある。
+
+**競合が発生する条件:**
+- モデルAがCUDAを使用中（GPUメモリに常駐）
+- モデルBを**新規ロード**してGPUに転送
+- cuDNNストリームが不整合になり、両方のモデルが使用不能に
+
+**試したが失敗したアプローチ:**
+
+| アプローチ | 結果 | 理由 |
+|--------------|------|------|
+| モデル切り替え時に`del model` | ❌ | CUDAコンテキストが壊れる |
+| GPU→CPU移動してから別モデル使用 | ❌ | 移動後もハンドルが無効化 |
+| `torch.cuda.empty_cache()` | ❌ | コンテキストはクリアされない |
+| `torch.cuda.synchronize()` | ❌ | ストリーム同期だけでは不十分 |
+| cuDNN `benchmark=False` | ❌ | 動的ロード問題は解決しない |
+
+### 10.3 解決策：モデルプリロード
+
+**核心アイデア:**
+サーバー起動時に**両方のモデルを先にGPUにロード**しておく。動的ロードを避けることでCUDAストリーム競合を防止。
+
+**実装 (`http_server/main.py`):**
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """起動・終了処理"""
+    print("[Server] Starting JetRacer HTTP API Server...")
+    
+    # cuDNN設定（複数モデルの競合を防止）
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
+            print("[Server] cuDNN: benchmark=False, deterministic=True")
+    except Exception as e:
+        print(f"[Server] Warning: Could not configure cuDNN: {e}")
+    
+    # 重要: 両方のモデルを先にロード（CUDAストリーム競合防止）
+    print("[Server] Pre-loading models to avoid CUDA stream conflicts...")
+    try:
+        # 1. OneFormerモデルをロード
+        print("[Server] Loading OneFormer model...")
+        from .routes.oneformer import get_segmenter
+        get_segmenter()
+        print("[Server] OneFormer model loaded")
+        
+        # 2. Lightweightモデルをロード
+        print("[Server] Loading Lightweight model...")
+        from pathlib import Path
+        import torch
+        model_path = Path.home() / "models" / "best_model.pth"
+        if model_path.exists():
+            from .routes.distance_grid import _lightweight_model_cache
+            import segmentation_models_pytorch as smp
+            
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model = smp.DeepLabV3Plus(
+                encoder_name="mobilenet_v2",
+                encoder_weights=None,
+                in_channels=3,
+                classes=3
+            )
+            model.load_state_dict(torch.load(str(model_path), map_location=device))
+            model.to(device)
+            model.eval()
+            
+            _lightweight_model_cache["model"] = model
+            _lightweight_model_cache["device"] = str(device)
+            _lightweight_model_cache["path"] = str(model_path)
+            print(f"[Server] Lightweight model loaded on {device}")
+        else:
+            print(f"[Server] Lightweight model not found at {model_path}")
+        
+        print("[Server] All models pre-loaded successfully")
+    except Exception as e:
+        print(f"[Server] Warning: Model pre-loading failed: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # 以降、カメラ起動等...
+```
+
+### 10.4 動作フロー
+
+**プリロード後のメモリ状態:**
+
+```
+サーバー起動
+  ├── cuDNN設定
+  ├── OneFormer ロード → GPU (~2-3GB)
+  ├── Lightweight ロード → GPU (~0.2GB)
+  ├── カメラ起動
+  └── Ready!
+
+実行時（どの順番でもOK）
+  ├── Cameras OneFormer → 既にロード済み ✅
+  ├── AI Decision Lightweight → 既にロード済み ✅
+  └── AI Decision OneFormer → 既にロード済み ✅
+```
+
+**GPUメモリ使用量（Jetson 8GB）:**
+
+| コンポーネント | 使用量 |
+|--------------|--------|
+| OS/システム | ~1.5GB |
+| OneFormer (Swin Tiny) | ~2-3GB |
+| Lightweight (MobileNetV2) | ~0.2GB |
+| カメラ/処理バッファ | ~1GB |
+| **合計** | **~5-6GB** |
+| 余裕 | ~2-3GB |
+
+### 10.5 起動ログの確認
+
+正常にプリロードされた場合のログ:
+
+```
+[Server] Starting JetRacer HTTP API Server...
+[Server] cuDNN: benchmark=False, deterministic=True
+[Server] Pre-loading models to avoid CUDA stream conflicts...
+[Server] Loading OneFormer model...
+[OneFormer] Loading model... (this may take a minute)
+[OneFormer] Model loaded successfully
+[Server] OneFormer model loaded
+[Server] Loading Lightweight model...
+[Server] Lightweight model loaded on cuda
+[Server] All models pre-loaded successfully
+```
+
+### 10.6 トラブルシューティング
+
+**症状:** プリロード後もCUDAエラーが発生
+
+**対処:**
+1. Jetsonを完全に再起動（`sudo reboot`）
+2. 他のGPU使用プロセスを終了（`nvidia-smi`で確認）
+3. サーバーを再起動
+
+**症状:** Lightweightモデルが見つからない
+
+**対処:**
+モデルファイルが正しいパスにあるか確認:
+```bash
+ls -la ~/models/best_model.pth
+```
+
+### 10.7 重要な教訓
+
+1. **JetsonのCUDAはデリケート**: デスクトップGPUとは異なり、動的なモデルロード/アンロードに弱い
+
+2. **複数モデルはプリロード必須**: 遅延ロードはCUDA競合の原因
+
+3. **メモリ計画が重要**: 8GBの制限内で両モデルを常駐させる必要がある
+
+4. **cuDNN設定は補助的**: `benchmark=False`だけでは不十分、プリロードが必須
+
+---
+
+## 11. 今後の課題
 
 1. **TensorRT最適化**: PyTorchモデルをTensorRTに変換し、さらに高速化（目標: <20ms）
 2. **CUDA対応OpenCVのビルド**: ONNXモデルもGPUで実行可能に
@@ -304,7 +485,7 @@ rm -rf ~/jetracer_data/datasets/{dataset_name}/training_data
 
 ---
 
-## 9. 参考情報
+## 12. 参考情報
 
 ### ADE20Kラベル一覧（主要クラス）
 
