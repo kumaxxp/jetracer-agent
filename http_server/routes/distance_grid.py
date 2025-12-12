@@ -471,8 +471,9 @@ async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = Fal
     try:
         print(f"[DistanceGrid] analyze-segmentation-lightweight: camera={camera_id}")
         
-        # 注: OneFormerモデルのアンロードは行わない（CUDAコンテキストが壊れるため）
-        # 両方のモデルをGPUに同時に保持する
+        # CUDAストリームを同期して競合を防止
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         # カメラからフレーム取得
         frame = camera_manager.read(camera_id, apply_undistort=undistort)
@@ -753,6 +754,9 @@ def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
     
     # 推論
     with torch.no_grad():
+        # CUDAストリームを同期して競合を防止
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         output = model(img)
         if torch.cuda.is_available():
             torch.cuda.synchronize()

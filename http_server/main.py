@@ -15,6 +15,18 @@ async def lifespan(app: FastAPI):
     """起動・終了処理"""
     # 起動時
     print("[Server] Starting JetRacer HTTP API Server...")
+    
+    # cuDNN設定（複数モデルの競合を防歐）
+    try:
+        import torch
+        if torch.cuda.is_available():
+            # ベンチマークを無効化（競合の原因になる）
+            torch.backends.cudnn.benchmark = False
+            # 決定的な動作を有効化
+            torch.backends.cudnn.deterministic = True
+            print("[Server] cuDNN: benchmark=False, deterministic=True")
+    except Exception as e:
+        print(f"[Server] Warning: Could not configure cuDNN: {e}")
 
     # 複数カメラを起動（カメラ0, 1）
     results = camera_manager.start_all(

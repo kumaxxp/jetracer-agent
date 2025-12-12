@@ -154,8 +154,9 @@ def run_oneformer_internal(camera_id: int = 0, highlight_road: bool = False) -> 
     
     import torch
     
-    # 注: 軽量モデルのアンロードは行わない（CUDAコンテキストが壊れるため）
-    # 両方のモデルをGPUに同時に保持する
+    # CUDAストリームを同期して競合を防止
+    if torch.cuda.is_available():
+        torch.cuda.synchronize()
     
     start_time = time.time()
     
