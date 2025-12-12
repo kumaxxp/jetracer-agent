@@ -55,42 +55,110 @@ class CameraInstance:
         self._frame: Optional[np.ndarray] = None
         self._frame_lock = threading.Lock()
         self.frame_count = 0
-        self.width = 320
-        self.height = 240
-        self.fps = 10
+        
+        # 設定値
+        self.width = 640
+        self.height = 480
+        self.fps = 30
+        self.sensor_mode: Optional[int] = None
+        self.capture_width = 1280
+        self.capture_height = 720
+        self.capture_fps = 60
 
-    def start(self, width: int = 320, height: int = 240, fps: int = 10) -> bool:
-        """カメラ起動"""
+    def start(self, width: int = 640, height: int = 480, fps: int = 30) -> bool:
+        """カメラ起動（デフォルト設定）"""
+        return self.start_with_mode(
+            sensor_mode=None,  # 自動
+            output_width=width,
+            output_height=height,
+            fps=fps
+        )
+
+    def start_with_mode(
+        self,
+        sensor_mode: Optional[int] = None,
+        output_width: int = 640,
+        output_height: int = 480,
+        fps: int = 30,
+        capture_width: Optional[int] = None,
+        capture_height: Optional[int] = None
+    ) -> bool:
+        """センサーモード指定でカメラ起動
+        
+        Args:
+            sensor_mode: センサーモード (0-4)、Noneで自動選択
+            output_width: 出力解像度（幅）
+            output_height: 出力解像度（高さ）
+            fps: フレームレート
+            capture_width: キャプチャ解像度（幅）、Noneでモードに応じて自動
+            capture_height: キャプチャ解像度（高さ）、Noneでモードに応じて自動
+        """
         if self._camera is not None:
             if hasattr(self._camera, 'running') and self._camera.running:
-                print(f"[Camera{self.camera_id}] Already running")
-                return True
+                print(f"[Camera{self.camera_id}] Already running, stopping first...")
+                self.stop()
 
-        self.width = width
-        self.height = height
+        self.width = output_width
+        self.height = output_height
         self.fps = fps
+        self.sensor_mode = sensor_mode
+        
+        # センサーモードに応じたキャプチャ解像度を決定
+        if capture_width and capture_height:
+            self.capture_width = capture_width
+            self.capture_height = capture_height
+        else:
+            self.capture_width, self.capture_height, self.capture_fps = \
+                self._get_capture_params_for_mode(sensor_mode, fps)
 
         # JetCamera を使用
         if _JETCAMERA_AVAILABLE:
-            if self._start_jetcamera():
+            if self._start_jetcamera_with_mode():
                 return True
 
         # フォールバック: V4L2
         return self._start_v4l2_fallback()
 
-    def _start_jetcamera(self) -> bool:
-        """JetCamera (jetracer_minimal) で起動"""
+    def _get_capture_params_for_mode(self, sensor_mode: Optional[int], target_fps: int) -> tuple:
+        """センサーモードに応じたキャプチャパラメータを返す"""
+        # モード別のデフォルト設定
+        mode_params = {
+            0: (3280, 2464, 21),
+            1: (3280, 1848, 28),
+            2: (1920, 1080, 30),
+            3: (1640, 1232, 30),
+            4: (1280, 720, 60),
+        }
+        
+        if sensor_mode is not None and sensor_mode in mode_params:
+            w, h, max_fps = mode_params[sensor_mode]
+            return (w, h, min(target_fps, max_fps))
+        
+        # 自動選択: ターゲットFPSに基づいて最適なモードを選択
+        if target_fps > 30:
+            return (1280, 720, min(target_fps, 60))  # モード4
+        elif target_fps > 21:
+            return (1640, 1232, min(target_fps, 30))  # モード3（ビニング、高画質）
+        else:
+            return (1920, 1080, min(target_fps, 30))  # モード2
+
+    def _start_jetcamera_with_mode(self) -> bool:
+        """JetCamera (jetracer_minimal) でセンサーモード指定起動"""
         try:
-            print(f"[Camera{self.camera_id}] Starting JetCamera: {self.width}x{self.height} @ {self.fps}fps")
+            print(f"[Camera{self.camera_id}] Starting JetCamera: "
+                  f"output={self.width}x{self.height}, "
+                  f"capture={self.capture_width}x{self.capture_height}@{self.capture_fps}fps, "
+                  f"sensor_mode={self.sensor_mode}")
 
             self._camera = JetCamera(
                 width=self.width,
                 height=self.height,
                 fps=self.fps,
                 device=self.camera_id,
-                capture_width=1280,
-                capture_height=720,
-                capture_fps=self.fps,
+                sensor_mode=self.sensor_mode,
+                capture_width=self.capture_width,
+                capture_height=self.capture_height,
+                capture_fps=self.capture_fps,
             )
 
             if self._camera.start():
@@ -98,6 +166,7 @@ class CameraInstance:
                 test_frame = self._camera.read()
                 if test_frame is not None:
                     print(f"[Camera{self.camera_id}] ✓ JetCamera started: shape={test_frame.shape}")
+                    self.frame_count = 0
                     return True
                 else:
                     print(f"[Camera{self.camera_id}] ✗ JetCamera test read failed")
@@ -110,8 +179,14 @@ class CameraInstance:
 
         except Exception as e:
             print(f"[Camera{self.camera_id}] ✗ JetCamera error: {e}")
+            import traceback
+            traceback.print_exc()
             self._camera = None
             return False
+
+    def _start_jetcamera(self) -> bool:
+        """JetCamera (jetracer_minimal) で起動（後方互換）"""
+        return self._start_jetcamera_with_mode()
 
     def _start_v4l2_fallback(self) -> bool:
         """V4L2 CSI カメラフォールバック（リサイズ対応）"""
@@ -140,6 +215,7 @@ class CameraInstance:
 
             self._camera = _V4L2CameraWrapper(cap, self.width, self.height)
             print(f"[Camera{self.camera_id}] ✓ V4L2 started: {capture_shape[1]}x{capture_shape[0]} -> {self.width}x{self.height}")
+            self.frame_count = 0
             return True
 
         except Exception as e:
@@ -189,6 +265,21 @@ class CameraInstance:
             return self._camera.running
         return True
 
+    def get_settings(self) -> dict:
+        """現在のカメラ設定を取得"""
+        return {
+            "camera_id": self.camera_id,
+            "output_width": self.width,
+            "output_height": self.height,
+            "fps": self.fps,
+            "sensor_mode": self.sensor_mode,
+            "capture_width": self.capture_width,
+            "capture_height": self.capture_height,
+            "capture_fps": self.capture_fps,
+            "frame_count": self.frame_count,
+            "is_ready": self.is_ready()
+        }
+
     def stop(self):
         """カメラ停止"""
         if self._camera is not None:
@@ -225,13 +316,40 @@ class MultiCameraManager:
         self._undistort_enabled: Dict[int, bool] = {}  # camera_id -> enabled
         self._calibration_data: Dict[int, Dict] = {}   # camera_id -> {camera_matrix, dist_coeffs, new_camera_matrix}
 
-    def start(self, width: int = 320, height: int = 240, fps: int = 10, camera_id: int = 0) -> bool:
+    def start(self, width: int = 640, height: int = 480, fps: int = 30, camera_id: int = 0) -> bool:
         """指定カメラを起動"""
         if camera_id not in self._cameras:
             self._cameras[camera_id] = CameraInstance(camera_id)
         return self._cameras[camera_id].start(width, height, fps)
 
-    def start_all(self, width: int = 320, height: int = 240, fps: int = 10, camera_ids: list = None) -> Dict[int, bool]:
+    def start_with_mode(
+        self,
+        camera_id: int = 0,
+        sensor_mode: Optional[int] = None,
+        output_width: int = 640,
+        output_height: int = 480,
+        fps: int = 30
+    ) -> bool:
+        """センサーモード指定でカメラを起動
+        
+        Args:
+            camera_id: カメラID
+            sensor_mode: センサーモード (0-4)、Noneで自動
+            output_width: 出力解像度（幅）
+            output_height: 出力解像度（高さ）
+            fps: フレームレート
+        """
+        if camera_id not in self._cameras:
+            self._cameras[camera_id] = CameraInstance(camera_id)
+        
+        return self._cameras[camera_id].start_with_mode(
+            sensor_mode=sensor_mode,
+            output_width=output_width,
+            output_height=output_height,
+            fps=fps
+        )
+
+    def start_all(self, width: int = 640, height: int = 480, fps: int = 30, camera_ids: list = None) -> Dict[int, bool]:
         """複数カメラを起動"""
         if camera_ids is None:
             camera_ids = [0, 1]
@@ -286,6 +404,12 @@ class MultiCameraManager:
             return (0, 0)
         cam = self._cameras[camera_id]
         return (cam.width, cam.height)
+
+    def get_camera_settings(self, camera_id: int = 0) -> Optional[dict]:
+        """指定カメラの現在の設定を取得"""
+        if camera_id not in self._cameras:
+            return None
+        return self._cameras[camera_id].get_settings()
 
     def stop(self, camera_id: int = None):
         """カメラ停止（camera_id=Noneで全停止）"""

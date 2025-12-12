@@ -4,8 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark
 from .core.camera_manager import camera_manager
+from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
 from .config import config
 
@@ -27,6 +28,17 @@ async def lifespan(app: FastAPI):
             print("[Server] cuDNN: benchmark=False, deterministic=True")
     except Exception as e:
         print(f"[Server] Warning: Could not configure cuDNN: {e}")
+    
+    # センサー capabilities をプローブ（カメラ起動前）
+    print("[Server] Probing sensor capabilities...")
+    try:
+        probe_results = sensor_capabilities.initialize(camera_ids=[0, 1])
+        for cid, ok in probe_results.items():
+            modes = sensor_capabilities.get_modes(cid)
+            sensor_name = sensor_capabilities.get_sensor_name(cid)
+            print(f"[Server] Camera {cid}: {sensor_name}, {len(modes)} modes available")
+    except Exception as e:
+        print(f"[Server] Warning: Sensor probe failed: {e}")
     
     # 重要: 両方のモデルを先にロード（CUDAストリーム競合防止）
     print("[Server] Pre-loading models to avoid CUDA stream conflicts...")
@@ -135,6 +147,7 @@ app.include_router(navigation.router, tags=["navigation"])
 app.include_router(distance_grid.router, tags=["distance-grid"])
 app.include_router(dataset.router, tags=["dataset"])
 app.include_router(training.router, tags=["training"])
+app.include_router(benchmark.router, prefix="/benchmark", tags=["benchmark"])
 
 
 @app.get("/")
@@ -146,6 +159,11 @@ def root():
         "endpoints": [
             "GET  /status                - システム状態",
             "POST /capture               - カメラ画像取得",
+            "GET  /capabilities          - センサー capabilities（全カメラ）",
+            "GET  /capabilities/{id}     - センサー capabilities（カメラ指定）",
+            "POST /capabilities/probe    - センサー capabilities 再取得",
+            "POST /restart               - カメラ再起動（モード変更）",
+            "GET  /settings/{id}         - カメラ設定取得",
             "POST /analyze               - 統合解析",
             "POST /control               - 車両制御",
             "POST /stop                  - 緊急停止",
@@ -170,7 +188,10 @@ def root():
             "POST /dataset/create - データセット作成",
             "POST /dataset/select - データセット選択",
             "POST /dataset/{name}/add/{camera_id} - 画像追加",
-            "POST /dataset/{name}/add-with-oneformer/{camera_id} - OneFormer付き画像追加"
+            "POST /dataset/{name}/add-with-oneformer/{camera_id} - OneFormer付き画像追加",
+            "POST /benchmark/camera - カメラベンチマーク",
+            "POST /benchmark/segmentation - セグメンテーションベンチマーク",
+            "GET  /benchmark/fps/{id} - リアルタイムFPS計測"
         ]
     }
 
