@@ -46,39 +46,34 @@ def get_segmenter():
             import traceback
             traceback.print_exc()
             raise
+    else:
+        # 既存のモデルをGPUに移動
+        import torch
+        if torch.cuda.is_available() and hasattr(_segmenter, 'model'):
+            if next(_segmenter.model.parameters()).device.type != 'cuda':
+                print("[OneFormer] Moving model to GPU")
+                _segmenter.model.to('cuda')
+                _segmenter.device = 'cuda'
     return _segmenter
 
 
-def unload_segmenter():
-    """OneFormerモデルをアンロード（CUDAメモリ解放）"""
+def move_segmenter_to_cpu():
+    """OneFormerモデルをCPUに移動（GPUメモリ解放、モデルは保持）"""
     global _segmenter
-    if _segmenter is not None:
-        print("[OneFormer] Unloading model to free CUDA memory")
-        
+    if _segmenter is not None and hasattr(_segmenter, 'model'):
         import torch
-        import gc
-        
-        # モデルをCPUに移動してから削除（CUDAハンドルを正しく解放）
-        try:
-            if hasattr(_segmenter, 'model') and _segmenter.model is not None:
-                _segmenter.model.cpu()
-                del _segmenter.model
-            if hasattr(_segmenter, 'processor'):
-                del _segmenter.processor
-        except Exception as e:
-            print(f"[OneFormer] Error during cleanup: {e}")
-        
-        _segmenter = None
-        
-        # ガベージコレクションを先に実行
-        gc.collect()
-        
-        # CUDAキャッシュをクリア
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        
-        print("[OneFormer] Model unloaded successfully")
+        if next(_segmenter.model.parameters()).device.type == 'cuda':
+            print("[OneFormer] Moving model to CPU to free GPU memory")
+            _segmenter.model.to('cpu')
+            _segmenter.device = 'cpu'
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            print("[OneFormer] Model moved to CPU")
+
+
+def unload_segmenter():
+    """OneFormerモデルをCPUに移動（後方互換性のためmove_segmenter_to_cpuを呼び出す）"""
+    move_segmenter_to_cpu()
 
 
 def create_stripe_pattern(height: int, width: int, stripe_width: int = 10) -> np.ndarray:

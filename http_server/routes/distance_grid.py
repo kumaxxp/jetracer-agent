@@ -692,33 +692,22 @@ _lightweight_model_cache = {
 
 
 def _clear_lightweight_cache():
-    """軽量モデルのキャッシュをクリア"""
+    """軽量モデルをCPUに移動（GPUメモリ解放、モデルは保持）"""
     global _lightweight_model_cache
     if _lightweight_model_cache["model"] is not None:
-        print("[Lightweight] Clearing model cache")
-        
         import torch
-        import gc
         
-        # モデルをCPUに移動してから削除（CUDAハンドルを正しく解放）
+        # モデルがGPU上にある場合のみCPUに移動
         try:
-            _lightweight_model_cache["model"].cpu()
+            if next(_lightweight_model_cache["model"].parameters()).device.type == 'cuda':
+                print("[Lightweight] Moving model to CPU to free GPU memory")
+                _lightweight_model_cache["model"].to('cpu')
+                _lightweight_model_cache["device"] = 'cpu'
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                print("[Lightweight] Model moved to CPU")
         except Exception as e:
             print(f"[Lightweight] Error moving model to CPU: {e}")
-        
-        _lightweight_model_cache["model"] = None
-        _lightweight_model_cache["device"] = None
-        _lightweight_model_cache["path"] = None
-        
-        # ガベージコレクションを先に実行
-        gc.collect()
-        
-        # CUDAキャッシュをクリア
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
-        
-        print("[Lightweight] Model cache cleared successfully")
 
 
 def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
@@ -733,10 +722,9 @@ def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
     
     # キャッシュからモデルを取得、または新規ロード
     model_path_str = str(model_path)
-    if (_lightweight_model_cache["model"] is None or 
-        _lightweight_model_cache["path"] != model_path_str or
-        _lightweight_model_cache["device"] != device):
-        
+    
+    if _lightweight_model_cache["model"] is None or _lightweight_model_cache["path"] != model_path_str:
+        # モデルがない、またはパスが違う場合は新規ロード
         print(f"[Lightweight] Loading model from {model_path_str}...")
         try:
             import segmentation_models_pytorch as smp
@@ -758,11 +746,21 @@ def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
         
         # キャッシュに保存
         _lightweight_model_cache["model"] = model
-        _lightweight_model_cache["device"] = device
+        _lightweight_model_cache["device"] = str(device)
         _lightweight_model_cache["path"] = model_path_str
         print(f"[Lightweight] Model loaded and cached on {device}")
     else:
+        # キャッシュされたモデルを使用
         model = _lightweight_model_cache["model"]
+        
+        # モデルがCPU上にある場合、GPUに移動
+        current_device = next(model.parameters()).device
+        if current_device.type != device.type:
+            print(f"[Lightweight] Moving model from {current_device} to {device}")
+            model.to(device)
+            _lightweight_model_cache["device"] = str(device)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
     
     load_time = (time.time() - start) * 1000
     
