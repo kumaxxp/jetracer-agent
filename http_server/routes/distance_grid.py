@@ -471,17 +471,8 @@ async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = Fal
     try:
         print(f"[DistanceGrid] analyze-segmentation-lightweight: camera={camera_id}")
         
-        # OneFormerモデルをアンロード（CUDAリソース競合防止）
-        try:
-            from .oneformer import unload_segmenter
-            unload_segmenter()
-        except Exception as e:
-            print(f"[DistanceGrid] Could not unload OneFormer: {e}")
-        
-        # CUDAストリームを同期（他のモデルとの競合を防ぐ）
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-            torch.cuda.empty_cache()
+        # 注: OneFormerモデルのアンロードは行わない（CUDAコンテキストが壊れるため）
+        # 両方のモデルをGPUに同時に保持する
         
         # カメラからフレーム取得
         frame = camera_manager.read(camera_id, apply_undistort=undistort)
@@ -692,26 +683,15 @@ _lightweight_model_cache = {
 
 
 def _clear_lightweight_cache():
-    """軽量モデルをCPUに移動（GPUメモリ解放、モデルは保持）"""
-    global _lightweight_model_cache
-    if _lightweight_model_cache["model"] is not None:
-        import torch
-        
-        # モデルがGPU上にある場合のみCPUに移動
-        try:
-            if next(_lightweight_model_cache["model"].parameters()).device.type == 'cuda':
-                print("[Lightweight] Moving model to CPU to free GPU memory")
-                _lightweight_model_cache["model"].to('cpu')
-                _lightweight_model_cache["device"] = 'cpu'
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                print("[Lightweight] Model moved to CPU")
-        except Exception as e:
-            print(f"[Lightweight] Error moving model to CPU: {e}")
+    """軽量モデルのキャッシュクリア（非推奨: CUDAコンテキストが壊れる可能性あり）"""
+    # 注意: この関数は使用しないでください
+    # CUDAコンテキストが壊れるため、モデルの移動/アンロードは行わない
+    # 両方のモデルをGPUに同時に保持する
+    pass
 
 
 def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
-    """PyTorch軽量モデルで推論（モデルキャッシュ付き）"""
+    """PyTorch軽量モデルで推論（モデルキャッシュ付き、常にGPUに保持）"""
     import torch
     global _lightweight_model_cache
     
@@ -752,15 +732,6 @@ def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
     else:
         # キャッシュされたモデルを使用
         model = _lightweight_model_cache["model"]
-        
-        # モデルがCPU上にある場合、GPUに移動
-        current_device = next(model.parameters()).device
-        if current_device.type != device.type:
-            print(f"[Lightweight] Moving model from {current_device} to {device}")
-            model.to(device)
-            _lightweight_model_cache["device"] = str(device)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
     
     load_time = (time.time() - start) * 1000
     

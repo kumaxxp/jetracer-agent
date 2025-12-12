@@ -31,7 +31,7 @@ class ClickRequest(BaseModel):
 
 
 def get_segmenter():
-    """OneFormerモデルを取得（遅延ロード）"""
+    """OneFormerモデルを取得（遅延ロード、常にGPUに保持）"""
     global _segmenter
     if _segmenter is None:
         print("[OneFormer] Loading model... (this may take a minute)")
@@ -46,34 +46,22 @@ def get_segmenter():
             import traceback
             traceback.print_exc()
             raise
-    else:
-        # 既存のモデルをGPUに移動
-        import torch
-        if torch.cuda.is_available() and hasattr(_segmenter, 'model'):
-            if next(_segmenter.model.parameters()).device.type != 'cuda':
-                print("[OneFormer] Moving model to GPU")
-                _segmenter.model.to('cuda')
-                _segmenter.device = 'cuda'
     return _segmenter
 
 
 def move_segmenter_to_cpu():
-    """OneFormerモデルをCPUに移動（GPUメモリ解放、モデルは保持）"""
-    global _segmenter
-    if _segmenter is not None and hasattr(_segmenter, 'model'):
-        import torch
-        if next(_segmenter.model.parameters()).device.type == 'cuda':
-            print("[OneFormer] Moving model to CPU to free GPU memory")
-            _segmenter.model.to('cpu')
-            _segmenter.device = 'cpu'
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            print("[OneFormer] Model moved to CPU")
+    """OneFormerモデルをCPUに移動（非推奨: CUDAコンテキストが壊れる可能性あり）"""
+    # 注意: この関数は使用しないでください
+    # CUDAコンテキストが壊れるため、モデルの移動/アンロードは行わない
+    print("[OneFormer] Warning: move_segmenter_to_cpu() is deprecated and does nothing")
+    pass
 
 
 def unload_segmenter():
-    """OneFormerモデルをCPUに移動（後方互換性のためmove_segmenter_to_cpuを呼び出す）"""
-    move_segmenter_to_cpu()
+    """OneFormerモデルをアンロード（非推奨: CUDAコンテキストが壊れる可能性あり）"""
+    # 注意: この関数は使用しないでください
+    print("[OneFormer] Warning: unload_segmenter() is deprecated and does nothing")
+    pass
 
 
 def create_stripe_pattern(height: int, width: int, stripe_width: int = 10) -> np.ndarray:
@@ -166,17 +154,8 @@ def run_oneformer_internal(camera_id: int = 0, highlight_road: bool = False) -> 
     
     import torch
     
-    # 軽量モデルのキャッシュをクリア（CUDAリソース競合防止）
-    try:
-        from .distance_grid import _clear_lightweight_cache
-        _clear_lightweight_cache()
-    except Exception as e:
-        print(f"[OneFormer] Could not clear lightweight cache: {e}")
-    
-    # CUDAキャッシュをクリアしてリソース競合を防止
-    if torch.cuda.is_available():
-        torch.cuda.synchronize()
-        torch.cuda.empty_cache()
+    # 注: 軽量モデルのアンロードは行わない（CUDAコンテキストが壊れるため）
+    # 両方のモデルをGPUに同時に保持する
     
     start_time = time.time()
     
