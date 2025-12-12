@@ -49,6 +49,22 @@ def get_segmenter():
     return _segmenter
 
 
+def unload_segmenter():
+    """OneFormerモデルをアンロード（CUDAメモリ解放）"""
+    global _segmenter
+    if _segmenter is not None:
+        print("[OneFormer] Unloading model to free CUDA memory")
+        _segmenter = None
+        
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
+        
+        import gc
+        gc.collect()
+
+
 def create_stripe_pattern(height: int, width: int, stripe_width: int = 10) -> np.ndarray:
     """斜め線パターンを作成（NumPy高速化版）"""
     y_coords, x_coords = np.ogrid[:height, :width]
@@ -138,6 +154,13 @@ def run_oneformer_internal(camera_id: int = 0, highlight_road: bool = False) -> 
     global _latest_seg_masks, _latest_seg_sizes
     
     import torch
+    
+    # 軽量モデルのキャッシュをクリア（CUDAリソース競合防止）
+    try:
+        from .distance_grid import _clear_lightweight_cache
+        _clear_lightweight_cache()
+    except Exception as e:
+        print(f"[OneFormer] Could not clear lightweight cache: {e}")
     
     # CUDAキャッシュをクリアしてリソース競合を防止
     if torch.cuda.is_available():

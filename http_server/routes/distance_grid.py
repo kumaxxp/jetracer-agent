@@ -471,9 +471,17 @@ async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = Fal
     try:
         print(f"[DistanceGrid] analyze-segmentation-lightweight: camera={camera_id}")
         
+        # OneFormerモデルをアンロード（CUDAリソース競合防止）
+        try:
+            from .oneformer import unload_segmenter
+            unload_segmenter()
+        except Exception as e:
+            print(f"[DistanceGrid] Could not unload OneFormer: {e}")
+        
         # CUDAストリームを同期（他のモデルとの競合を防ぐ）
         if torch.cuda.is_available():
             torch.cuda.synchronize()
+            torch.cuda.empty_cache()
         
         # カメラからフレーム取得
         frame = camera_manager.read(camera_id, apply_undistort=undistort)
@@ -681,6 +689,20 @@ _lightweight_model_cache = {
     "device": None,
     "path": None
 }
+
+
+def _clear_lightweight_cache():
+    """軽量モデルのキャッシュをクリア"""
+    global _lightweight_model_cache
+    if _lightweight_model_cache["model"] is not None:
+        print("[Lightweight] Clearing model cache")
+        _lightweight_model_cache["model"] = None
+        _lightweight_model_cache["device"] = None
+        _lightweight_model_cache["path"] = None
+        
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
 
 def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
