@@ -5,6 +5,7 @@ from typing import Optional, Dict, Any, List
 import base64
 import cv2
 import numpy as np
+import time
 
 from ..core.distance_grid import distance_grid_manager
 from ..core.camera_manager import camera_manager
@@ -316,15 +317,21 @@ def _analyze_cell(segmentation: np.ndarray, cell_polygon: List[tuple], road_labe
 
 @router.get("/{camera_id}/analyze-segmentation")
 async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False):
-    """セグメンテーション結果をグリッドで分析
+    """セグメンテーション結果をグリッドで分析（OneFormer使用）
     
     各グリッドセル内のROAD領域の割合を計算し、ナビゲーションヒントを生成
+    高精度だが低速（~15秒）
     """
     from .oneformer import get_segmenter, _latest_seg_masks, run_oneformer_internal
     from ..core.road_mapping import get_road_mapping
+    import torch
     
     try:
         print(f"[DistanceGrid] analyze-segmentation: camera={camera_id}")
+        
+        # CUDAストリームを同期（他のモデルとの競合を防ぐ）
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         
         # OneFormerでセグメンテーション実行
         seg_result = run_oneformer_internal(camera_id, highlight_road=True)
@@ -449,6 +456,289 @@ async def analyze_segmentation_with_grid(camera_id: int, undistort: bool = False
         print(f"[DistanceGrid] Error in analyze-segmentation: {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{camera_id}/analyze-segmentation-lightweight")
+async def analyze_segmentation_lightweight(camera_id: int, undistort: bool = False):
+    """軽量モデル（DeepLabV3+）でセグメンテーション結果をグリッド分析
+    
+    OneFormerより高速（30-50ms）だが精度は若干低い
+    """
+    import torch
+    from pathlib import Path
+    from ..core.road_mapping import get_road_mapping
+    
+    try:
+        print(f"[DistanceGrid] analyze-segmentation-lightweight: camera={camera_id}")
+        
+        # CUDAストリームを同期（他のモデルとの競合を防ぐ）
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        # カメラからフレーム取得
+        frame = camera_manager.read(camera_id, apply_undistort=undistort)
+        if frame is None:
+            raise HTTPException(status_code=503, detail=f"Camera {camera_id} not available")
+        
+        # 軽量モデルのパス
+        model_dir = Path.home() / "models"
+        
+        # ONNXモデルを優先、なければPyTorchモデル
+        onnx_path = model_dir / "road_segmentation.onnx"
+        pth_path = model_dir / "best_model.pth"
+        
+        start_time = time.time()
+        
+        if onnx_path.exists():
+            # ONNX推論
+            segmentation, inference_time, model_type = _run_lightweight_onnx(frame, onnx_path)
+        elif pth_path.exists():
+            # PyTorch推論
+            segmentation, inference_time, model_type = _run_lightweight_pth(frame, pth_path)
+        else:
+            raise HTTPException(
+                status_code=404, 
+                detail="No lightweight model found. Train a model first."
+            )
+        
+        print(f"[DistanceGrid] Lightweight model ({model_type}): {inference_time:.1f}ms")
+        print(f"[DistanceGrid] Segmentation shape: {segmentation.shape}")
+        
+        # ROADラベルID（軽量モデルは固定: 0=Other, 1=ROAD, 2=MYCAR）
+        road_label_ids = {1}  # ROAD
+        
+        # グリッドデータを取得
+        config = distance_grid_manager.get_config(camera_id)
+        grid_data = distance_grid_manager.compute_grid_lines(camera_id)
+        
+        h, w = segmentation.shape
+        
+        # セル単位の分析
+        cell_polygons = _compute_cell_polygons(grid_data)
+        cell_analysis = []
+        
+        for row, row_cells in enumerate(cell_polygons):
+            row_data = []
+            for col, cell_polygon in enumerate(row_cells):
+                road_ratio = _analyze_cell(segmentation, cell_polygon, road_label_ids)
+                row_data.append(road_ratio)
+            cell_analysis.append(row_data)
+        
+        num_rows = len(cell_analysis)
+        num_cols = len(cell_analysis[0]) if cell_analysis else 0
+        
+        # 行/列分析
+        depth_analysis = []
+        for line_data in grid_data["horizontal_lines"]:
+            depth_m = line_data["depth_m"]
+            points = line_data["points"]
+            
+            if len(points) < 2:
+                continue
+            
+            y_pixels = [int(p[1]) for p in points]
+            y_avg = np.mean(y_pixels)
+            
+            if 0 <= y_avg < h:
+                y_idx = int(y_avg)
+                row = segmentation[y_idx, :]
+                road_pixels = sum(1 for p in row if p in road_label_ids)
+                road_ratio = road_pixels / len(row)
+                
+                depth_analysis.append({
+                    "depth_m": depth_m,
+                    "road_ratio": float(road_ratio),
+                    "pixel_y": y_idx
+                })
+        
+        lateral_analysis = []
+        for line_data in grid_data["vertical_lines"]:
+            offset_m = line_data["offset_m"]
+            points = line_data["points"]
+            
+            if len(points) < 2:
+                continue
+            
+            x_pixels = [int(p[0]) for p in points]
+            x_avg = np.mean(x_pixels)
+            
+            if 0 <= x_avg < w:
+                x_idx = int(x_avg)
+                col = segmentation[:, x_idx]
+                road_pixels = sum(1 for p in col if p in road_label_ids)
+                road_ratio = road_pixels / len(col)
+                
+                lateral_analysis.append({
+                    "offset_m": offset_m,
+                    "road_ratio": float(road_ratio),
+                    "pixel_x": x_idx
+                })
+        
+        # ナビゲーションヒント
+        navigation_hint = _compute_navigation_hint(depth_analysis, lateral_analysis, cell_analysis)
+        
+        # オーバーレイ画像作成
+        overlay = _create_lightweight_overlay(frame, segmentation)
+        
+        # グリッドオーバーレイを追加
+        grid_overlay = distance_grid_manager.draw_grid_overlay(
+            camera_id, overlay,
+            color=(0, 255, 0),
+            thickness=2,
+            show_labels=True
+        )
+        
+        _, buffer = cv2.imencode('.jpg', grid_overlay, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        overlay_base64 = base64.b64encode(buffer).decode('utf-8')
+        
+        total_time = (time.time() - start_time) * 1000
+        
+        # ROAD統計
+        road_percentage = float(np.sum(segmentation == 1) / segmentation.size * 100)
+        
+        return {
+            "camera_id": camera_id,
+            "model_type": model_type,
+            "cell_analysis": cell_analysis,
+            "depth_analysis": depth_analysis,
+            "lateral_analysis": lateral_analysis,
+            "navigation_hint": navigation_hint,
+            "overlay_base64": overlay_base64,
+            "road_percentage": round(road_percentage, 1),
+            "grid_config": {
+                "depth_range_m": [config.grid_depth_min_m, config.grid_depth_max_m],
+                "width_m": config.grid_width_m,
+                "num_rows": num_rows,
+                "num_cols": num_cols
+            },
+            "inference_time_ms": round(inference_time, 1),
+            "total_time_ms": round(total_time, 1)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        print(f"[DistanceGrid] Error in analyze-segmentation-lightweight: {e}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+def _run_lightweight_onnx(frame: np.ndarray, model_path) -> tuple:
+    """ONNX軽量モデルで推論"""
+    start = time.time()
+    
+    # OpenCV DNNでロード
+    net = cv2.dnn.readNetFromONNX(str(model_path))
+    
+    # CUDAが使用可能ならGPU、なければCPU
+    try:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_CUDA)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CUDA_FP16)
+        backend = "CUDA_FP16"
+    except:
+        net.setPreferableBackend(cv2.dnn.DNN_BACKEND_DEFAULT)
+        net.setPreferableTarget(cv2.dnn.DNN_TARGET_CPU)
+        backend = "CPU"
+    
+    # 前処理（ImageNet標準化）
+    input_size = (320, 240)
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, input_size)
+    img = img.astype(np.float32) / 255.0
+    
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    img = (img - mean) / std
+    
+    # CHW形式に変換してバッチ次元追加
+    blob = np.expand_dims(img.transpose(2, 0, 1), 0).astype(np.float32)
+    
+    # 推論
+    net.setInput(blob)
+    output = net.forward()
+    
+    inference_time = (time.time() - start) * 1000
+    
+    # 後処理
+    mask = np.argmax(output[0], axis=0).astype(np.uint8)
+    
+    # 元画像サイズにリサイズ
+    mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+    
+    return mask, inference_time, f"ONNX ({backend})"
+
+
+def _run_lightweight_pth(frame: np.ndarray, model_path) -> tuple:
+    """PyTorch軽量モデルで推論"""
+    import torch
+    
+    start = time.time()
+    
+    # デバイス設定
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # モデルロード
+    try:
+        import segmentation_models_pytorch as smp
+        model = smp.DeepLabV3Plus(
+            encoder_name="mobilenet_v2",
+            encoder_weights=None,
+            in_channels=3,
+            classes=3
+        )
+    except ImportError:
+        raise HTTPException(
+            status_code=500, 
+            detail="segmentation_models_pytorch not installed"
+        )
+    
+    model.load_state_dict(torch.load(str(model_path), map_location=device))
+    model.to(device)
+    model.eval()
+    
+    # 前処理
+    input_size = (320, 240)
+    img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    img = cv2.resize(img, input_size)
+    img = img.astype(np.float32) / 255.0
+    
+    # ImageNet標準化
+    mean = np.array([0.485, 0.456, 0.406])
+    std = np.array([0.229, 0.224, 0.225])
+    img = (img - mean) / std
+    
+    # テンソル変換
+    img = img.transpose(2, 0, 1)
+    img = torch.from_numpy(img).unsqueeze(0).float().to(device)
+    
+    # 推論
+    with torch.no_grad():
+        output = model(img)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+    
+    inference_time = (time.time() - start) * 1000
+    
+    # 後処理
+    mask = torch.argmax(output, dim=1).squeeze().cpu().numpy().astype(np.uint8)
+    
+    # 元画像サイズにリサイズ
+    mask = cv2.resize(mask, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_NEAREST)
+    
+    return mask, inference_time, f"PyTorch ({device})"
+
+
+def _create_lightweight_overlay(frame: np.ndarray, segmentation: np.ndarray) -> np.ndarray:
+    """軽量モデル用のオーバーレイ画像を作成"""
+    # カラーマップ: 0=黒(Other), 1=緑(ROAD), 2=赤(MYCAR)
+    overlay = np.zeros_like(frame)
+    overlay[segmentation == 1] = [0, 255, 0]    # ROAD = 緑 (BGR)
+    overlay[segmentation == 2] = [0, 0, 255]    # MYCAR = 赤 (BGR)
+    
+    # ブレンド
+    result = cv2.addWeighted(frame, 0.6, overlay, 0.4, 0)
+    return result
 
 
 def _compute_navigation_hint(depth_analysis: list, lateral_analysis: list, cell_analysis: list = None) -> Dict[str, Any]:
