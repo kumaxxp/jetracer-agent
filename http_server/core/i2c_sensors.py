@@ -539,33 +539,47 @@ class FaBoJetRacerPWMReader:
 
 
 # =============================================================================
-# VL53L7CX 距離計
+# DFRobot Matrix LiDAR (SEN0628) - VL53L7CX + RP2040
 # =============================================================================
 
-# VL53L5CX/VL53L7CX ライブラリのインポート試行
-try:
-    import vl53l5cx_ctypes as vl53l5cx
-    HAS_VL53L5CX = True
-    print("[VL53L7CX] vl53l5cx_ctypes library available")
-except ImportError:
-    try:
-        from vl53l5cx.vl53l5cx import VL53L5CX as VL53L5CX_Driver
-        HAS_VL53L5CX = True
-        print("[VL53L7CX] vl53l5cx library available")
-    except ImportError:
-        HAS_VL53L5CX = False
-        print("[VL53L7CX] No VL53L5CX library - using basic I2C mode")
-
-
-class VL53L7CXSensor:
-    """VL53L7CX 8x8マルチゾーンToFセンサー
+class MatrixLidarSensor:
+    """DFRobot SEN0628 Matrix LiDAR Sensor (8x8 ToF)
     
-    FaBo JetRacer: I2Cアドレス 0x33
-    測定範囲: 最大400cm
-    解像度: 8x8 = 64ゾーン
+    VL53L7CX + RP2040ベースのマトリックスレーザー距離計
+    I2Cアドレス: 0x30/0x31/0x32/0x33 (選択可能)
+    測定範囲: 20mm - 4000mm
+    解像度: 4x4 または 8x8
     """
     
-    DEFAULT_ADDRESS = 0x33  # FaBo JetRacerのアドレス
+    DEFAULT_ADDRESS = 0x33
+    
+    # コマンド
+    CMD_SETMODE = 1
+    CMD_ALL_DATA = 2
+    CMD_FIXED_POINT = 3
+    
+    # マトリックスモード
+    MATRIX_4X4 = 16
+    MATRIX_8X8 = 64
+    
+    # レスポンスステータス
+    STATUS_SUCCESS = 0x53
+    STATUS_FAILED = 0x63
+    
+    # エラーコード
+    ERR_CODE_NONE = 0x00
+    ERR_CODE_TIMEOUT = 0x04
+    
+    # パケットインデックス
+    INDEX_ARGS_NUM_H = 0
+    INDEX_ARGS_NUM_L = 1
+    INDEX_CMD = 2
+    INDEX_RES_ERR = 0
+    INDEX_RES_STATUS = 1
+    INDEX_RES_CMD = 2
+    INDEX_RES_LEN_L = 3
+    INDEX_RES_LEN_H = 4
+    INDEX_RES_DATA = 5
     
     def __init__(self, bus: int = 7, address: int = DEFAULT_ADDRESS):
         self.bus_num = bus
@@ -573,161 +587,219 @@ class VL53L7CXSensor:
         self._bus = None
         self._initialized = False
         self._lock = threading.Lock()
-        self._driver = None
+        self._matrix_mode = self.MATRIX_8X8  # デフォルト 8x8
         
     def initialize(self) -> tuple[bool, str]:
-        """VL53L7CX 初期化
-        
-        Returns:
-            (success, message)
-        """
+        """Matrix LiDAR 初期化"""
         if not HAS_SMBUS:
             return False, "smbus not available"
         
         try:
             self._bus = smbus.SMBus(self.bus_num)
             
-            # デバイスID確認（VL53L5CX/L7CXはID読み取りが複雑）
-            # まずはデバイスの存在確認
+            # デバイスの存在確認（読み取りテスト）
             try:
-                # Model IDレジスタ（高値バイト）
-                model_id_high = self._read_register(0x0000)
-                model_id_low = self._read_register(0x0001)
-                model_id = (model_id_high << 8) | model_id_low
-                print(f"[VL53L7CX] Model ID: 0x{model_id:04X}")
+                self._bus.read_byte(self.address)
             except Exception as e:
-                return False, f"Failed to read model ID: {e}"
+                return False, f"Device not found at 0x{self.address:02X}: {e}"
             
-            # VL53L5CX/L7CXのModel IDは0xEBAA
-            if model_id != 0xEBAA:
-                return False, f"Invalid model ID: 0x{model_id:04X} (expected 0xEBAA)"
-            
-            # 基本的な初期化シーケンス
-            # 注意: 完全な初期化にはSTのULDドライバが必要
-            
-            # ソフトウェアリセット
-            self._write_register(0x0000, 0x00)  # Soft reset
-            time.sleep(0.1)
-            
-            # Ranging設定（簡易版）
-            # 実際にはファームウェアロードが必要
+            # 8x8モードに設定
+            if not self._set_ranging_mode(self.MATRIX_8X8):
+                print(f"[MatrixLidar] Warning: Failed to set 8x8 mode, using default")
             
             self._initialized = True
-            msg = f"Initialized at address 0x{self.address:02X} (basic mode)"
-            print(f"[VL53L7CX] {msg}")
-            print(f"[VL53L7CX] Note: Full functionality requires ST ULD driver")
+            msg = f"Initialized at 0x{self.address:02X} (8x8 mode)"
+            print(f"[MatrixLidar] {msg}")
             return True, msg
             
         except Exception as e:
             return False, f"Initialization error: {e}"
     
-    def _read_register(self, reg: int) -> int:
-        """16bitアドレスのレジスタ読み取り"""
-        # VL53L7CXは16bitアドレス
-        reg_high = (reg >> 8) & 0xFF
-        reg_low = reg & 0xFF
-        self._bus.write_i2c_block_data(self.address, reg_high, [reg_low])
-        return self._bus.read_byte(self.address)
+    def _send_packet(self, pkt: list):
+        """パケット送信"""
+        register = 0x55  # DFRobotプロトコルのコマンドレジスタ
+        try:
+            self._bus.write_i2c_block_data(self.address, register, pkt)
+        except Exception as e:
+            print(f"[MatrixLidar] Send error: {e}")
     
-    def _write_register(self, reg: int, value: int):
-        """16bitアドレスのレジスタ書き込み"""
-        reg_high = (reg >> 8) & 0xFF
-        reg_low = reg & 0xFF
-        self._bus.write_i2c_block_data(self.address, reg_high, [reg_low, value])
+    def _recv_data(self, length: int) -> list:
+        """データ受信"""
+        rslt = []
+        for _ in range(length):
+            try:
+                rslt.append(self._bus.read_byte(self.address))
+            except:
+                rslt.append(0)
+        return rslt
     
-    def _read_multi(self, reg: int, length: int) -> list:
-        """16bitアドレスから複数バイト読み取り"""
-        reg_high = (reg >> 8) & 0xFF
-        reg_low = reg & 0xFF
-        self._bus.write_i2c_block_data(self.address, reg_high, [reg_low])
-        # 複数バイト読み取り（最大は32バイト）
-        result = []
-        remaining = length
-        while remaining > 0:
-            chunk_size = min(remaining, 32)
-            chunk = self._bus.read_i2c_block_data(self.address, reg_high, chunk_size)
-            result.extend(chunk)
-            remaining -= chunk_size
-        return result[:length]
+    def _recv_packet(self, cmd: int, timeout: float = 2.0) -> list:
+        """レスポンスパケット受信"""
+        rslt = [self.ERR_CODE_TIMEOUT]
+        start_time = time.time()
+        
+        while time.time() - start_time < timeout:
+            status_list = self._recv_data(1)
+            if not status_list:
+                continue
+            status = status_list[0]
+            
+            if status == 0xFF:
+                time.sleep(0.07)
+                continue
+            
+            if status in [self.STATUS_SUCCESS, self.STATUS_FAILED]:
+                command_list = self._recv_data(1)
+                if not command_list:
+                    continue
+                command = command_list[0]
+                
+                if command != cmd:
+                    rslt[0] = 0x02  # ERR_CODE_RES_PKT
+                    return rslt
+                
+                len_data = self._recv_data(2)
+                if len(len_data) < 2:
+                    continue
+                
+                length = len_data[0] | (len_data[1] << 8)
+                if length > 256:
+                    return rslt
+                
+                rslt = [self.ERR_CODE_NONE, status, command, len_data[0], len_data[1]]
+                
+                if length > 0:
+                    data = self._recv_data(length)
+                    rslt.extend(data)
+                
+                return rslt
+            
+            time.sleep(0.07)
+        
+        return rslt
+    
+    def _set_ranging_mode(self, matrix: int) -> bool:
+        """マトリックスモード設定 (16=4x4, 64=8x8)"""
+        length = 4
+        pkt = [0] * (3 + length)
+        pkt[self.INDEX_ARGS_NUM_H] = ((length + 1) >> 8) & 0xFF
+        pkt[self.INDEX_ARGS_NUM_L] = (length + 1) & 0xFF
+        pkt[self.INDEX_CMD] = self.CMD_SETMODE
+        pkt[3] = 0
+        pkt[4] = 0
+        pkt[5] = 0
+        pkt[6] = matrix
+        
+        with self._lock:
+            self._send_packet(pkt)
+            time.sleep(0.1)
+            recv_pkt = self._recv_packet(self.CMD_SETMODE)
+        
+        if (len(recv_pkt) >= 5 and 
+            recv_pkt[self.INDEX_RES_ERR] == self.ERR_CODE_NONE and 
+            recv_pkt[self.INDEX_RES_STATUS] == self.STATUS_SUCCESS):
+            self._matrix_mode = matrix
+            time.sleep(0.5)  # モード切替待ち
+            return True
+        return False
+    
+    def get_all_data(self) -> list:
+        """全距離データ取得 (16 or 64 values)"""
+        length = 0
+        pkt = [0] * 3
+        pkt[self.INDEX_ARGS_NUM_H] = 0
+        pkt[self.INDEX_ARGS_NUM_L] = 1
+        pkt[self.INDEX_CMD] = self.CMD_ALL_DATA
+        
+        with self._lock:
+            self._send_packet(pkt)
+            time.sleep(0.1)
+            recv_pkt = self._recv_packet(self.CMD_ALL_DATA)
+        
+        if (len(recv_pkt) >= 5 and
+            recv_pkt[self.INDEX_RES_ERR] == self.ERR_CODE_NONE and
+            recv_pkt[self.INDEX_RES_STATUS] == self.STATUS_SUCCESS):
+            data_len = recv_pkt[self.INDEX_RES_LEN_L] | (recv_pkt[self.INDEX_RES_LEN_H] << 8)
+            if data_len > 0:
+                return recv_pkt[self.INDEX_RES_DATA:]
+        return []
+    
+    def get_fixed_point_data(self, x: int, y: int) -> int:
+        """指定座標の距離取得"""
+        length = 2
+        pkt = [0] * (3 + length)
+        pkt[self.INDEX_ARGS_NUM_H] = ((length + 1) >> 8) & 0xFF
+        pkt[self.INDEX_ARGS_NUM_L] = (length + 1) & 0xFF
+        pkt[self.INDEX_CMD] = self.CMD_FIXED_POINT
+        pkt[3] = x
+        pkt[4] = y
+        
+        with self._lock:
+            self._send_packet(pkt)
+            time.sleep(0.1)
+            recv_pkt = self._recv_packet(self.CMD_FIXED_POINT)
+        
+        if (len(recv_pkt) >= 7 and
+            recv_pkt[self.INDEX_RES_ERR] == self.ERR_CODE_NONE and
+            recv_pkt[self.INDEX_RES_STATUS] == self.STATUS_SUCCESS):
+            return recv_pkt[self.INDEX_RES_DATA] | (recv_pkt[self.INDEX_RES_DATA + 1] << 8)
+        return -1
     
     def read(self) -> DistanceData:
-        """距離データ読み取り
-        
-        注意: 基本モードでは単純な距離読み取りのみ
-        完全な8x8データにはST ULDドライバが必要
-        """
+        """距離データ読み取り (8x8グリッド)"""
         data = DistanceData(timestamp=time.time())
         
         if not self._initialized or not self._bus:
             return data
         
         try:
-            with self._lock:
-                # データ準備完了を待つ
-                # ステータスレジスタを確認
-                status = self._read_register(0x0003)  # System status
-                
-                # 簡易読み取り（実際のデータフォーマットはファームウェア依存）
-                # Rangingデータの開始アドレス（仮）
-                # 実際にはファームウェアロード後のオフセットが必要
-                
-                # ダミーデータでテスト（実際のデータは取得できない可能性が高い）
-                # VL53L7CXは複雑な初期化が必要
-                
-                # テスト用にランダムなデータを生成（後で実際のデータに置き換え）
-                import random
-                for i in range(8):
-                    for j in range(8):
-                        # 中心部分が近く、周辺が遠いパターン
-                        center_dist = abs(i - 3.5) + abs(j - 3.5)
-                        base_distance = 500 + int(center_dist * 100)
-                        noise = random.randint(-50, 50)
-                        data.distances[i][j] = max(0, base_distance + noise)
-                
-                # 統計計算
-                all_distances = [d for row in data.distances for d in row if d > 0]
-                if all_distances:
-                    data.min_distance = min(all_distances)
-                    data.max_distance = max(all_distances)
-                    data.avg_distance = sum(all_distances) / len(all_distances)
-                
-                data.valid = True
-                
+            raw_data = self.get_all_data()
+            
+            if not raw_data:
+                return data
+            
+            # 8x8モード: 128バイト (64 x 2bytes)
+            # 4x4モード: 32バイト (16 x 2bytes)
+            grid_size = 8 if self._matrix_mode == self.MATRIX_8X8 else 4
+            
+            for i in range(grid_size):
+                for j in range(grid_size):
+                    idx = (i * grid_size + j) * 2
+                    if idx + 1 < len(raw_data):
+                        # Little-Endian: low byte first
+                        distance = raw_data[idx] | (raw_data[idx + 1] << 8)
+                        if grid_size == 8:
+                            data.distances[i][j] = distance
+                        else:
+                            # 4x4を4x4にマッピング（中央に配置）
+                            data.distances[i*2][j*2] = distance
+                            data.distances[i*2+1][j*2] = distance
+                            data.distances[i*2][j*2+1] = distance
+                            data.distances[i*2+1][j*2+1] = distance
+            
+            # 統計計算
+            all_distances = [d for row in data.distances for d in row if 0 < d < 4000]
+            if all_distances:
+                data.min_distance = min(all_distances)
+                data.max_distance = max(all_distances)
+                data.avg_distance = sum(all_distances) / len(all_distances)
+            
+            data.valid = True
+            
         except Exception as e:
-            print(f"[VL53L7CX] Read error: {e}")
+            print(f"[MatrixLidar] Read error: {e}")
         
         return data
     
-    def start_ranging(self) -> bool:
-        """測定開始"""
-        if not self._initialized:
-            return False
-        try:
-            # コマンドレジスタにスタートコマンドを書き込み
-            # 実際のコマンドはSTドライバ依存
-            print("[VL53L7CX] Starting ranging...")
-            return True
-        except Exception as e:
-            print(f"[VL53L7CX] Start ranging error: {e}")
-            return False
-    
-    def stop_ranging(self) -> bool:
-        """測定停止"""
-        if not self._initialized:
-            return False
-        try:
-            print("[VL53L7CX] Stopping ranging...")
-            return True
-        except Exception as e:
-            print(f"[VL53L7CX] Stop ranging error: {e}")
-            return False
-    
     def close(self):
         """クリーンアップ"""
-        self.stop_ranging()
         if self._bus:
             self._bus.close()
             self._bus = None
+
+
+# 後方互換性のためのエイリアス
+VL53L7CXSensor = MatrixLidarSensor
 
 
 # =============================================================================
