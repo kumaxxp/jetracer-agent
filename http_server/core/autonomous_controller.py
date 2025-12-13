@@ -259,6 +259,7 @@ class AutonomousController:
     
     async def _control_step(self):
         """1ステップの制御処理"""
+        import concurrent.futures
         
         # 1. モード判定（PWM入力から）
         pwm_data = None
@@ -294,7 +295,7 @@ class AutonomousController:
             if lidar_data and lidar_data.valid:
                 self.state.lidar_min_mm = lidar_data.min_distance
         
-        # 3. カメラ＆セグメンテーション
+        # 3. カメラ＆セグメンテーション（非同期実行）
         front_analysis = None
         ground_analysis = None
         
@@ -302,7 +303,11 @@ class AutonomousController:
             # 正面カメラ
             front_frame = self._camera_manager.read(self.config.front_camera_id)
             if front_frame is not None:
-                seg_result = self._segmenter.segment(front_frame)
+                # セグメンテーションを別スレッドで実行（イベントループをブロックしない）
+                loop = asyncio.get_event_loop()
+                seg_result = await loop.run_in_executor(
+                    None, self._segmenter.segment, front_frame
+                )
                 if seg_result:
                     front_analysis = self._steering_calc.analyze_road_mask(seg_result["mask"])
                     self.state.road_ratio = front_analysis.road_ratio
@@ -311,7 +316,10 @@ class AutonomousController:
             if self.config.use_dual_camera:
                 ground_frame = self._camera_manager.read(self.config.ground_camera_id)
                 if ground_frame is not None:
-                    seg_result = self._segmenter.segment(ground_frame)
+                    loop = asyncio.get_event_loop()
+                    seg_result = await loop.run_in_executor(
+                        None, self._segmenter.segment, ground_frame
+                    )
                     if seg_result:
                         ground_analysis = self._steering_calc.analyze_road_mask(seg_result["mask"])
         
