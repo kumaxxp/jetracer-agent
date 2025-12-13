@@ -215,7 +215,7 @@ class DataCollector:
         frame_name = f"{frame_id:06d}"
         
         # 正面カメラ画像取得
-        frame = self._camera_manager.capture(0)
+        frame = self._camera_manager.read(0)
         if frame is None:
             print(f"[DataCollector] Failed to capture frame {frame_id}")
             return
@@ -229,7 +229,7 @@ class DataCollector:
         
         # 足元カメラ（オプション）
         if self.config.save_ground_camera:
-            ground_frame = self._camera_manager.capture(1)
+            ground_frame = self._camera_manager.read(1)
             if ground_frame is not None:
                 ground_path = self._session.session_dir / "ground_frames" / f"{frame_name}.{self.config.image_format}"
                 cv2.imwrite(str(ground_path), ground_frame, [cv2.IMWRITE_JPEG_QUALITY, self.config.image_quality])

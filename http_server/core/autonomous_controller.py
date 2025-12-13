@@ -300,7 +300,7 @@ class AutonomousController:
         
         if self._camera_manager and self._segmenter:
             # 正面カメラ
-            front_frame = self._camera_manager.capture(self.config.front_camera_id)
+            front_frame = self._camera_manager.read(self.config.front_camera_id)
             if front_frame is not None:
                 seg_result = self._segmenter.segment(front_frame)
                 if seg_result:
@@ -309,7 +309,7 @@ class AutonomousController:
             
             # デュアルカメラの場合は足元も
             if self.config.use_dual_camera:
-                ground_frame = self._camera_manager.capture(self.config.ground_camera_id)
+                ground_frame = self._camera_manager.read(self.config.ground_camera_id)
                 if ground_frame is not None:
                     seg_result = self._segmenter.segment(ground_frame)
                     if seg_result:

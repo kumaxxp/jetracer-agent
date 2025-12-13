@@ -291,7 +291,7 @@ async def debug_steering():
     }
     
     # カメラキャプチャ
-    frame = camera_manager.capture(0)
+    frame = camera_manager.read(0)
     if frame is None:
         result["error"] = "Failed to capture frame"
         return result
