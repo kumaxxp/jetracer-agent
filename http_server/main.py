@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors
 from .core.camera_manager import camera_manager
 from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
@@ -129,6 +129,7 @@ app.include_router(distance_grid.router, tags=["distance-grid"])
 app.include_router(dataset.router, tags=["dataset"])
 app.include_router(training.router, tags=["training"])
 app.include_router(benchmark.router, prefix="/benchmark", tags=["benchmark"])
+app.include_router(sensors.router, tags=["sensors"])
 
 
 @app.get("/")
@@ -172,7 +173,13 @@ def root():
             "POST /dataset/{name}/add-with-oneformer/{camera_id} - OneFormer付き画像追加",
             "POST /benchmark/camera - カメラベンチマーク",
             "POST /benchmark/segmentation - セグメンテーションベンチマーク",
-            "GET  /benchmark/fps/{id} - リアルタイムFPS計測"
+            "GET  /benchmark/fps/{id} - リアルタイムFPS計測",
+            "GET  /sensors/scan - I2Cデバイススキャン",
+            "POST /sensors/init - センサー初期化",
+            "GET  /sensors/imu - IMUデータ読み取り",
+            "GET  /sensors/pwm_input - PWM入力読み取り",
+            "GET  /sensors/all - 全センサーデータ",
+            "GET  /sensors/status - センサー状態"
         ]
     }
 
