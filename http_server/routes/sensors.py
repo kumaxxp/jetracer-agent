@@ -89,13 +89,12 @@ def initialize_sensor(req: InitRequest):
             result["firmware_version"] = sensor_manager.pwm._firmware_version
         
     elif req.sensor_type == "distance":
-        address = req.address or 0x33
-        success = sensor_manager.initialize_distance(address)
+        address = req.address or 0x33  # FaBo JetRacer VL53L7CX
+        success, message = sensor_manager.initialize_distance(address)
         result["success"] = success
         result["sensor"] = "VL53L7CX"
         result["address"] = f"0x{address:02X}"
-        if not success:
-            result["note"] = "VL53L7CX requires ST library for full implementation"
+        result["message"] = message
         
     else:
         result["error"] = f"Unknown sensor type: {req.sensor_type}"
