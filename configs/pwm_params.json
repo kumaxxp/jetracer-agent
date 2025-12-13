@@ -1,12 +1,12 @@
 {
   "pwm_steering": {
-    "left": 310,
-    "center": 410,
-    "right": 510
+    "left": 335,
+    "center": 400,
+    "right": 465
   },
   "pwm_speed": {
-    "front": 430,
-    "stop": 410,
-    "back": 390
+    "front": 400,
+    "stop": 380,
+    "back": 360
   }
 }
