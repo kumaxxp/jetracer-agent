@@ -225,22 +225,28 @@ class BNO055Sensor:
         self._initialized = False
         self._lock = threading.Lock()
         
-    def initialize(self) -> bool:
-        """BNO055 初期化"""
+    def initialize(self) -> tuple[bool, str]:
+        """BNO055 初期化
+        
+        Returns:
+            (success, message)
+        """
         if not HAS_SMBUS:
-            print(f"[BNO055] Mock mode - no actual hardware")
-            return False
+            return False, "smbus not available"
             
         try:
             self._bus = smbus.SMBus(self.bus_num)
             
             # チップID確認
-            chip_id = self._bus.read_byte_data(self.address, BNO055Registers.CHIP_ID)
+            try:
+                chip_id = self._bus.read_byte_data(self.address, BNO055Registers.CHIP_ID)
+            except Exception as e:
+                return False, f"Failed to read chip ID: {e}"
+                
             print(f"[BNO055] Chip ID: 0x{chip_id:02X}")
             
             if chip_id != self.CHIP_ID_VALUE:
-                print(f"[BNO055] Invalid chip ID (expected 0xA0)")
-                return False
+                return False, f"Invalid chip ID: 0x{chip_id:02X} (expected 0xA0)"
             
             # CONFIG モードに設定
             self._bus.write_byte_data(self.address, BNO055Registers.OPR_MODE, BNO055OperationMode.CONFIG)
@@ -253,8 +259,7 @@ class BNO055Sensor:
             # チップID再確認
             chip_id = self._bus.read_byte_data(self.address, BNO055Registers.CHIP_ID)
             if chip_id != self.CHIP_ID_VALUE:
-                print(f"[BNO055] Reset failed")
-                return False
+                return False, f"Reset failed, chip ID: 0x{chip_id:02X}"
             
             # 通常電源モード
             self._bus.write_byte_data(self.address, BNO055Registers.PWR_MODE, 0x00)
@@ -268,12 +273,12 @@ class BNO055Sensor:
             time.sleep(0.02)
             
             self._initialized = True
-            print(f"[BNO055] Initialized at address 0x{self.address:02X} (NDOF mode)")
-            return True
+            msg = f"Initialized at address 0x{self.address:02X} (NDOF mode)"
+            print(f"[BNO055] {msg}")
+            return True, msg
             
         except Exception as e:
-            print(f"[BNO055] Initialization failed: {e}")
-            return False
+            return False, f"Initialization error: {e}"
     
     def read(self) -> IMUData:
         """IMUデータ読み取り"""
@@ -672,7 +677,7 @@ class I2CSensorManager:
                 
         return {"name": "Unknown", "type": "unknown"}
     
-    def initialize_imu(self, address: int = 0x28) -> bool:
+    def initialize_imu(self, address: int = 0x29) -> tuple[bool, str]:
         """BNO055 IMU初期化"""
         self.imu = BNO055Sensor(self.bus_num, address)
         return self.imu.initialize()

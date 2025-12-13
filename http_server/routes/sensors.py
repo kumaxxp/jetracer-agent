@@ -72,10 +72,11 @@ def initialize_sensor(req: InitRequest):
     
     if req.sensor_type == "imu":
         address = req.address or 0x29  # FaBo JetRacerはAD0=HIGHなので0x29
-        success = sensor_manager.initialize_imu(address)
+        success, message = sensor_manager.initialize_imu(address)
         result["success"] = success
         result["sensor"] = "BNO055"
         result["address"] = f"0x{address:02X}"
+        result["message"] = message
         
     elif req.sensor_type == "pwm_input":
         address = req.address or 0x08
