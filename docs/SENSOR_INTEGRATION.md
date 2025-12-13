@@ -55,9 +55,9 @@ ESP32S3 DevKitがI2Cスレーブとして動作し、RC受信機からのPWM信�
 
 | チャンネル | 用途 | 典型値 |
 |-----------|------|--------|
-| CH1 | ステアリング | 1000-2000μs (中央: ~1520) |
-| CH2 | スロットル | 1000-2000μs (中央: ~1520) |
-| CH3 | モード切替 | ~1000: RCモード, ~2000: AIモード |
+| CH1 | ステアリング | 1000-2000μs (中央: ~1500) |
+| CH2 | スロットル | 1000-2000μs (中央: ~1500) |
+| CH3 | モード切替 | <1500: manual, ≥1500: auto |
 
 ### LED制御
 
@@ -172,7 +172,7 @@ yana-brainダッシュボードの「Sensors」タブで:
    - 加速度/ジャイロ/磁気
    - キャリブレーション状態
 3. **PWM Input**: 
-   - RC/AIモード表示
+   - Manual/Autoモード表示
    - 各チャンネルの値
 4. **LED Control**: ボードLEDの色を変更
 5. **Graphs**: リアルタイムグラフ
@@ -236,17 +236,15 @@ pitch = ((euler[5] << 8) | euler[4]) / 16.0
 print(f"Heading: {heading}°, Roll: {roll}°, Pitch: {pitch}°")
 ```
 
-### RC/AIモード判定
+### Manual/Autoモード判定
 
 ```python
 def get_control_mode(ch3_us: int) -> str:
     """PWM CH3からコントロールモードを判定"""
-    if ch3_us < 1300:
-        return "rc"      # マニュアル操作
-    elif ch3_us > 1700:
-        return "ai"      # 自律走行
+    if ch3_us >= 1500:
+        return "auto"    # 自律走行
     else:
-        return "transition"  # 切り替え中
+        return "manual"  # マニュアル操作
 ```
 
 ## 10. 参考リンク

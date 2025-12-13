@@ -389,8 +389,7 @@ class FaBoJetRacerPWMReader:
     PWM_CENTER = 1500  # μs
     
     # モード判定閾値
-    MODE_RC_THRESHOLD = 1300  # これ未満はRC
-    MODE_AI_THRESHOLD = 1700  # これ以上はAI
+    MODE_THRESHOLD = 1500  # これ以上はauto、未満はmanual
     
     def __init__(self, bus: int = 7, address: int = DEFAULT_ADDRESS):
         self.bus_num = bus
@@ -462,15 +461,13 @@ class FaBoJetRacerPWMReader:
             data.ch2_normalized = self._normalize_pwm(data.ch2)
             data.ch3_normalized = self._normalize_pwm(data.ch3)
             
-            # モード判定
+            # モード判定 (1500以上=auto, 1500未満=manual)
             if not self._is_valid_pwm(data.ch3):
                 data.mode = "no_signal"  # CH3が無効な場合
-            elif data.ch3 < self.MODE_RC_THRESHOLD:
-                data.mode = "rc"
-            elif data.ch3 > self.MODE_AI_THRESHOLD:
-                data.mode = "ai"
+            elif data.ch3 >= self.MODE_THRESHOLD:
+                data.mode = "auto"
             else:
-                data.mode = "transition"
+                data.mode = "manual"
             
             data.valid = True
             
