@@ -481,15 +481,20 @@ class FaBoJetRacerPWMReader:
         return 500 <= pulse_us <= 2500
     
     def _normalize_pwm(self, pulse_us: int) -> float:
-        """PWMパルス幅を正規化"""
+        """PWMパルス幅を正規化
+        
+        1000μs = -1.0 (-100%)
+        1500μs = 0.0 (0%)
+        2000μs = +1.0 (+100%)
+        """
         # 範囲外チェック
         if pulse_us < self.PWM_MIN:
             return -1.0
         if pulse_us > self.PWM_MAX:
             return 1.0
             
-        # -1.0 ~ 1.0 に正規化
-        return (pulse_us - self.PWM_CENTER) / (self.PWM_MAX - self.PWM_CENTER) * 2.0
+        # -1.0 ~ 1.0 に正規化 (中心=1500, レンジ=500)
+        return (pulse_us - self.PWM_CENTER) / 500.0
     
     def set_led_color(self, color: str) -> bool:
         """LEDカラー設定
