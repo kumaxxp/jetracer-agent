@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous
 from .core.camera_manager import camera_manager
 from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
@@ -131,6 +131,7 @@ app.include_router(training.router, tags=["training"])
 app.include_router(benchmark.router, prefix="/benchmark", tags=["benchmark"])
 app.include_router(sensors.router, tags=["sensors"])
 app.include_router(pwm.router, tags=["pwm"])
+app.include_router(autonomous.router, tags=["autonomous"])
 
 
 @app.get("/")
