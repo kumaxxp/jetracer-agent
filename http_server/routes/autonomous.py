@@ -310,24 +310,24 @@ async def debug_steering():
     command = steering_calculator.calculate_steering(analysis)
     
     result["segmentation"] = {
-        "road_percentage": seg_result["road_percentage"],
-        "inference_time_ms": seg_result["inference_time_ms"],
+        "road_percentage": float(seg_result["road_percentage"]),
+        "inference_time_ms": float(seg_result["inference_time_ms"]),
     }
     result["analysis"] = {
-        "road_ratio": round(analysis.road_ratio, 3),
-        "centroid_x": round(analysis.centroid_x, 3),
-        "left_ratio": round(analysis.left_ratio, 3),
-        "center_ratio": round(analysis.center_ratio, 3),
-        "right_ratio": round(analysis.right_ratio, 3),
-        "boundary_left": analysis.boundary_left,
-        "boundary_right": analysis.boundary_right,
+        "road_ratio": round(float(analysis.road_ratio), 3),
+        "centroid_x": round(float(analysis.centroid_x), 3),
+        "left_ratio": round(float(analysis.left_ratio), 3),
+        "center_ratio": round(float(analysis.center_ratio), 3),
+        "right_ratio": round(float(analysis.right_ratio), 3),
+        "boundary_left": bool(analysis.boundary_left),
+        "boundary_right": bool(analysis.boundary_right),
     }
     result["command"] = {
-        "steering": command.steering,
-        "throttle": command.throttle,
-        "stop": command.stop,
+        "steering": float(command.steering),
+        "throttle": float(command.throttle),
+        "stop": bool(command.stop),
         "reason": command.reason,
-        "raw_steering": round(command.raw_steering, 3),
+        "raw_steering": round(float(command.raw_steering), 3),
     }
     
     return result
