@@ -281,8 +281,12 @@ async def list_sessions():
 # =============================================================================
 
 @router.get("/debug/steering")
-async def debug_steering():
-    """ステアリング計算のデバッグ情報"""
+async def debug_steering(mode: str = None):
+    """ステアリング計算のデバッグ情報
+    
+    Args:
+        mode: "grid" or "centroid" (省略時は現在のモード)
+    """
     from ..core.camera_manager import camera_manager
     from ..core.lightweight_segmentation import lightweight_segmentation
     
@@ -305,32 +309,110 @@ async def debug_steering():
         result["error"] = "Failed to segment"
         return result
     
-    # 分析
-    analysis = steering_calculator.analyze_road_mask(seg_result["mask"])
-    command = steering_calculator.calculate_steering(analysis)
+    mask = seg_result["mask"]
     
     result["segmentation"] = {
         "road_percentage": float(seg_result["road_percentage"]),
         "inference_time_ms": float(seg_result["inference_time_ms"]),
     }
-    result["analysis"] = {
-        "road_ratio": round(float(analysis.road_ratio), 3),
-        "centroid_x": round(float(analysis.centroid_x), 3),
-        "left_ratio": round(float(analysis.left_ratio), 3),
-        "center_ratio": round(float(analysis.center_ratio), 3),
-        "right_ratio": round(float(analysis.right_ratio), 3),
-        "boundary_left": bool(analysis.boundary_left),
-        "boundary_right": bool(analysis.boundary_right),
-    }
-    result["command"] = {
-        "steering": float(command.steering),
-        "throttle": float(command.throttle),
-        "stop": bool(command.stop),
-        "reason": command.reason,
-        "raw_steering": round(float(command.raw_steering), 3),
-    }
+    
+    # オーバーレイ画像
+    if "overlay_base64" in seg_result:
+        result["overlay_base64"] = seg_result["overlay_base64"]
+    
+    # モード判定
+    use_mode = mode or steering_calculator.get_mode()
+    result["mode"] = use_mode
+    
+    if use_mode == "grid":
+        # グリッドベース計算
+        cell_analysis = steering_calculator.build_grid_from_mask(mask)
+        command = steering_calculator.calculate_steering_grid(cell_analysis)
+        
+        result["grid"] = {
+            "cell_analysis": [[round(float(v), 3) for v in row] for row in cell_analysis],
+            "recommended_path": command.recommended_path,
+            "rows": len(cell_analysis),
+            "cols": len(cell_analysis[0]) if cell_analysis else 0,
+        }
+        result["command"] = {
+            "steering": float(command.steering),
+            "throttle": float(command.throttle),
+            "stop": bool(command.stop),
+            "reason": command.reason,
+            "raw_steering": round(float(command.raw_steering), 3),
+        }
+    else:
+        # 重心ベース計算
+        analysis = steering_calculator.analyze_road_mask(mask)
+        command = steering_calculator.calculate_steering_centroid(analysis)
+        
+        result["analysis"] = {
+            "road_ratio": round(float(analysis.road_ratio), 3),
+            "centroid_x": round(float(analysis.centroid_x), 3),
+            "left_ratio": round(float(analysis.left_ratio), 3),
+            "center_ratio": round(float(analysis.center_ratio), 3),
+            "right_ratio": round(float(analysis.right_ratio), 3),
+            "boundary_left": bool(analysis.boundary_left),
+            "boundary_right": bool(analysis.boundary_right),
+        }
+        result["command"] = {
+            "steering": float(command.steering),
+            "throttle": float(command.throttle),
+            "stop": bool(command.stop),
+            "reason": command.reason,
+            "raw_steering": round(float(command.raw_steering), 3),
+        }
     
     return result
+
+
+@router.get("/overlay")
+async def get_overlay_image():
+    """最新のセグメンテーションオーバーレイ画像を取得"""
+    overlay = autonomous_controller.get_overlay_image()
+    state = autonomous_controller.get_state()
+    
+    return {
+        "overlay_base64": overlay,
+        "grid": state.get("grid", {}),
+        "control": state.get("control", {}),
+        "sensors": state.get("sensors", {}),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.get("/grid")
+async def get_grid_analysis():
+    """現在のグリッド分析結果を取得"""
+    state = autonomous_controller.get_state()
+    
+    return {
+        "grid": state.get("grid", {}),
+        "control": state.get("control", {}),
+        "mode": steering_calculator.get_mode(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.post("/mode/{mode}")
+async def set_steering_mode(mode: str):
+    """ステアリング計算モードを設定
+    
+    Args:
+        mode: "grid" or "centroid"
+    """
+    if mode not in ["grid", "centroid"]:
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {mode}. Use 'grid' or 'centroid'")
+    
+    steering_calculator.set_mode(mode)
+    autonomous_controller.update_config(steering_mode=mode)
+    
+    return {
+        "success": True,
+        "mode": mode,
+        "timestamp": datetime.now().isoformat()
+    }
 
 
 @router.get("/debug/safety")

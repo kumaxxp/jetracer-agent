@@ -1,11 +1,12 @@
 """自律走行コントローラー
 
 セグメンテーションベースの自律走行制御ループを管理する。
+グリッド経路追従アルゴリズムを使用。
 """
 import asyncio
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Optional, Callable, List
 from enum import Enum
 import threading
 
@@ -30,6 +31,9 @@ class ControllerConfig:
     # セグメンテーション
     use_lightweight_model: bool = True   # 軽量モデル使用
     segmentation_timeout_sec: float = 2.0  # セグメンテーションタイムアウト
+    
+    # ステアリングモード
+    steering_mode: str = "grid"          # "grid" or "centroid"
 
 
 @dataclass
@@ -49,6 +53,10 @@ class ControllerState:
     imu_roll: float = 0.0
     imu_pitch: float = 0.0
     
+    # グリッド状態
+    grid_analysis: List[List[float]] = None
+    recommended_path: List[int] = None
+    
     # 統計
     loop_count: int = 0
     last_loop_time_ms: float = 0.0
@@ -57,6 +65,15 @@ class ControllerState:
     # タイムスタンプ
     last_update: float = 0.0
     started_at: float = 0.0
+    
+    # 最新のセグメンテーション画像
+    last_overlay_base64: str = None
+    
+    def __post_init__(self):
+        if self.grid_analysis is None:
+            self.grid_analysis = []
+        if self.recommended_path is None:
+            self.recommended_path = []
     
     def to_dict(self) -> dict:
         return {
@@ -75,6 +92,10 @@ class ControllerState:
                     "pitch": round(self.imu_pitch, 1),
                 }
             },
+            "grid": {
+                "cell_analysis": self.grid_analysis,
+                "recommended_path": self.recommended_path,
+            },
             "stats": {
                 "loop_count": self.loop_count,
                 "last_loop_time_ms": round(self.last_loop_time_ms, 2),
@@ -82,6 +103,7 @@ class ControllerState:
                 "uptime_sec": round(time.time() - self.started_at, 1) if self.started_at else 0,
             },
             "last_update": self.last_update,
+            "has_overlay": self.last_overlay_base64 is not None,
         }
 
 
@@ -110,10 +132,9 @@ class AutonomousController:
     
     def _init_components(self):
         """コンポーネントを初期化"""
-        # インポート
         from .camera_manager import camera_manager
         from .i2c_sensors import sensor_manager
-        from .steering_calculator import steering_calculator
+        from .steering_calculator import steering_calculator, SteeringMode
         from .safety_guard import safety_guard
         from .pwm_control import get_pwm_controller
         
@@ -123,12 +144,15 @@ class AutonomousController:
         self._safety_guard = safety_guard
         self._pwm_controller = get_pwm_controller()
         
+        # ステアリングモード設定
+        self._steering_calc.set_mode(self.config.steering_mode)
+        print(f"[AutoController] Steering mode: {self.config.steering_mode}")
+        
         # セグメンテーションモデル選択
         if self.config.use_lightweight_model:
             from .lightweight_segmentation import lightweight_segmentation
             self._segmenter = lightweight_segmentation
         else:
-            # OneFormerを使う場合（重い）
             self._segmenter = None
     
     async def start(self) -> bool:
@@ -157,6 +181,8 @@ class AutonomousController:
         self.state.mode = ControlMode.INIT
         self.state.started_at = time.time()
         self.state.loop_count = 0
+        self.state.grid_analysis = []
+        self.state.recommended_path = []
         
         # ループ開始
         self._stop_event.clear()
@@ -259,8 +285,6 @@ class AutonomousController:
     
     async def _control_step(self):
         """1ステップの制御処理"""
-        import concurrent.futures
-        
         # 1. モード判定（PWM入力から）
         pwm_data = None
         if self._sensor_manager:
@@ -296,32 +320,38 @@ class AutonomousController:
                 self.state.lidar_min_mm = lidar_data.min_distance
         
         # 3. カメラ＆セグメンテーション（非同期実行）
-        front_analysis = None
-        ground_analysis = None
+        command = None
         
         if self._camera_manager and self._segmenter:
-            # 正面カメラ
             front_frame = self._camera_manager.read(self.config.front_camera_id)
             if front_frame is not None:
-                # セグメンテーションを別スレッドで実行（イベントループをブロックしない）
+                # セグメンテーションを別スレッドで実行
                 loop = asyncio.get_event_loop()
                 seg_result = await loop.run_in_executor(
                     None, self._segmenter.segment, front_frame
                 )
+                
                 if seg_result:
-                    front_analysis = self._steering_calc.analyze_road_mask(seg_result["mask"])
-                    self.state.road_ratio = front_analysis.road_ratio
-            
-            # デュアルカメラの場合は足元も
-            if self.config.use_dual_camera:
-                ground_frame = self._camera_manager.read(self.config.ground_camera_id)
-                if ground_frame is not None:
-                    loop = asyncio.get_event_loop()
-                    seg_result = await loop.run_in_executor(
-                        None, self._segmenter.segment, ground_frame
-                    )
-                    if seg_result:
-                        ground_analysis = self._steering_calc.analyze_road_mask(seg_result["mask"])
+                    mask = seg_result["mask"]
+                    self.state.road_ratio = seg_result.get("road_percentage", 0) / 100.0
+                    
+                    # オーバーレイ画像を保存
+                    if "overlay_base64" in seg_result:
+                        self.state.last_overlay_base64 = seg_result["overlay_base64"]
+                    
+                    # グリッドベース計算
+                    if self.config.steering_mode == "grid":
+                        # マスクからグリッドを構築
+                        cell_analysis = self._steering_calc.build_grid_from_mask(mask)
+                        self.state.grid_analysis = cell_analysis
+                        
+                        # グリッドからステアリング計算
+                        command = self._steering_calc.calculate_steering_grid(cell_analysis)
+                        self.state.recommended_path = command.recommended_path
+                    else:
+                        # 従来の重心ベース計算
+                        analysis = self._steering_calc.analyze_road_mask(mask)
+                        command = self._steering_calc.calculate_steering_centroid(analysis)
         
         # 4. 安全チェック
         if self._safety_guard:
@@ -335,13 +365,8 @@ class AutonomousController:
                 self.emergency_stop("; ".join(safety_status.reasons))
                 return
         
-        # 5. ステアリング計算
-        if front_analysis:
-            if ground_analysis and self.config.use_dual_camera:
-                command = self._steering_calc.calculate_dual_camera(front_analysis, ground_analysis)
-            else:
-                command = self._steering_calc.calculate_steering(front_analysis)
-            
+        # 5. ステアリング適用
+        if command:
             if command.stop:
                 self.emergency_stop(command.reason)
                 return
@@ -369,6 +394,10 @@ class AutonomousController:
         """現在の状態を取得"""
         return self.state.to_dict()
     
+    def get_overlay_image(self) -> Optional[str]:
+        """最新のオーバーレイ画像を取得"""
+        return self.state.last_overlay_base64
+    
     def set_callback(self, on_state_change: Callable = None, on_emergency: Callable = None):
         """コールバックを設定"""
         if on_state_change:
@@ -381,6 +410,10 @@ class AutonomousController:
         for key, value in kwargs.items():
             if hasattr(self.config, key):
                 setattr(self.config, key, value)
+        
+        # ステアリングモードの即時反映
+        if 'steering_mode' in kwargs and self._steering_calc:
+            self._steering_calc.set_mode(kwargs['steering_mode'])
     
     def get_config(self) -> dict:
         """現在の設定を取得"""
@@ -391,6 +424,7 @@ class AutonomousController:
             "ground_camera_id": self.config.ground_camera_id,
             "mode_switch_threshold": self.config.mode_switch_threshold,
             "use_lightweight_model": self.config.use_lightweight_model,
+            "steering_mode": self.config.steering_mode,
         }
 
 

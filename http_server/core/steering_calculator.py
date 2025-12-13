@@ -1,34 +1,53 @@
 """ステアリング計算モジュール
 
 セグメンテーション結果からステアリング/スロットル値を計算する。
+2つのモード：
+- centroid: 重心ベース（シンプル、高速）
+- grid: グリッド経路追従（高度、正確）
 """
 import numpy as np
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
+from enum import Enum
 import time
+
+
+class SteeringMode(Enum):
+    """ステアリング計算モード"""
+    CENTROID = "centroid"  # 重心ベース（従来方式）
+    GRID = "grid"          # グリッド経路追従
 
 
 @dataclass
 class SteeringParams:
     """ステアリング計算パラメータ"""
+    # 計算モード
+    mode: SteeringMode = SteeringMode.GRID
+    
     # ステアリング
     steering_gain: float = 1.5           # ステアリング感度
     steering_deadzone: float = 0.05      # デッドゾーン（この範囲は0とみなす）
     steering_max: float = 1.0            # 最大ステアリング値
     
     # スロットル
-    throttle_base: float = 0.15          # 基本スロットル
+    throttle_base: float = 0.75          # 基本スロットル
     throttle_min: float = 0.10           # 最小スロットル（カーブ時）
-    throttle_max: float = 0.25           # 最大スロットル（直進時）
+    throttle_max: float = 0.75           # 最大スロットル（直進時）
     curve_reduction: float = 0.3         # カーブ時のスロットル減少率
     
     # ROAD判定
     road_stop_threshold: float = 0.10    # これ以下でROAD不足停止
     road_slow_threshold: float = 0.30    # これ以下で減速
     
-    # 重み付け
+    # 重み付け（centroidモード用）
     near_weight: float = 1.0             # 下部（足元）の重み
     far_weight: float = 0.3              # 上部（遠方）の重み
+    
+    # グリッド設定（gridモード用）
+    grid_rows: int = 4                   # グリッド行数
+    grid_cols: int = 5                   # グリッド列数
+    grid_passable_threshold: float = 0.3 # 通行可能とみなす閾値
+    exclude_bottom_rows: int = 2         # 車体が映る下部行数（経路計算から除外）
 
 
 @dataclass
@@ -43,6 +62,11 @@ class SteeringCommand:
     road_ratio: float = 0.0
     centroid_x: float = 0.5
     raw_steering: float = 0.0
+    recommended_path: List[int] = None  # グリッドモード時の経路
+    
+    def __post_init__(self):
+        if self.recommended_path is None:
+            self.recommended_path = []
 
 
 @dataclass  
@@ -59,6 +83,17 @@ class CameraAnalysis:
     timestamp: float
 
 
+@dataclass
+class GridAnalysis:
+    """グリッド分析結果"""
+    cell_values: List[List[float]]  # グリッドセルの通行可能性 [row][col]
+    road_ratio: float               # 全体のROAD比率
+    recommended_path: List[int]     # 各行の推奨列
+    recommended_direction: str      # "left", "center", "right"
+    confidence: float               # 信頼度
+    timestamp: float
+
+
 class SteeringCalculator:
     """ステアリング計算エンジン"""
     
@@ -66,6 +101,257 @@ class SteeringCalculator:
         self.params = params or SteeringParams()
         self._last_steering = 0.0
         self._last_throttle = 0.0
+    
+    # =========================================================================
+    # メイン計算メソッド
+    # =========================================================================
+    
+    def calculate(
+        self, 
+        road_mask: np.ndarray = None,
+        cell_analysis: List[List[float]] = None
+    ) -> SteeringCommand:
+        """
+        ステアリングを計算（モードに応じて自動選択）
+        
+        Args:
+            road_mask: ROADマスク（centroidモード用）
+            cell_analysis: グリッドセル分析結果（gridモード用）
+        """
+        if self.params.mode == SteeringMode.GRID and cell_analysis:
+            return self.calculate_steering_grid(cell_analysis)
+        elif road_mask is not None:
+            analysis = self.analyze_road_mask(road_mask)
+            return self.calculate_steering_centroid(analysis)
+        else:
+            return SteeringCommand(
+                steering=0.0, throttle=0.0, stop=True,
+                reason="入力データなし"
+            )
+    
+    # =========================================================================
+    # グリッドベース経路追従（新方式）
+    # =========================================================================
+    
+    def calculate_steering_grid(self, cell_analysis: List[List[float]]) -> SteeringCommand:
+        """
+        グリッドセル分析から経路追従ステアリングを計算
+        
+        Args:
+            cell_analysis: グリッドセルの通行可能性 [row][col] = 0.0〜1.0
+                          Row 0 = 遠方、Row N = 手前
+                          -1.0 = 画面外（無視）
+        """
+        if not cell_analysis or not cell_analysis[0]:
+            return SteeringCommand(
+                steering=0.0, throttle=0.0, stop=True,
+                reason="グリッドデータなし"
+            )
+        
+        num_rows = len(cell_analysis)
+        num_cols = len(cell_analysis[0])
+        
+        # 全体のROAD比率を計算
+        valid_cells = []
+        for row in cell_analysis:
+            for val in row:
+                if val >= 0:  # -1は画面外
+                    valid_cells.append(val)
+        
+        road_ratio = sum(valid_cells) / len(valid_cells) if valid_cells else 0.0
+        
+        # ROAD不足チェック
+        if road_ratio < self.params.road_stop_threshold:
+            return SteeringCommand(
+                steering=0.0, throttle=0.0, stop=True,
+                reason=f"ROAD不足: {road_ratio:.1%}",
+                road_ratio=road_ratio
+            )
+        
+        # 連続した推奨経路を計算
+        recommended_path = self._compute_continuous_path(cell_analysis)
+        
+        # 経路からステアリング計算
+        raw_steering = self._compute_steering_from_path(recommended_path, num_cols)
+        
+        # デッドゾーン処理
+        if abs(raw_steering) < self.params.steering_deadzone:
+            raw_steering = 0.0
+        
+        # クリップ
+        steering = np.clip(raw_steering * self.params.steering_gain, 
+                          -self.params.steering_max, self.params.steering_max)
+        
+        # スロットル計算
+        throttle = self._calculate_throttle(steering, road_ratio)
+        
+        # 方向判定
+        if steering < -0.3:
+            direction = "左旋回"
+        elif steering > 0.3:
+            direction = "右旋回"
+        elif steering < -0.1:
+            direction = "やや左"
+        elif steering > 0.1:
+            direction = "やや右"
+        else:
+            direction = "直進"
+        
+        reason = f"{direction} ROAD:{road_ratio:.0%}"
+        
+        return SteeringCommand(
+            steering=round(steering, 3),
+            throttle=round(throttle, 3),
+            stop=False,
+            reason=reason,
+            road_ratio=road_ratio,
+            centroid_x=0.5,  # グリッドモードでは使用しない
+            raw_steering=raw_steering,
+            recommended_path=recommended_path
+        )
+    
+    def _compute_continuous_path(self, grid: List[List[float]]) -> List[int]:
+        """
+        連続した推奨経路を重心ベースで計算
+        
+        各行で通行可能領域の重心を計算し、滑らかに繋げる。
+        手前の数行（車体が映る部分）は経路計算から除外。
+        """
+        if not grid or not grid[0]:
+            return []
+        
+        num_rows = len(grid)
+        num_cols = len(grid[0])
+        center_col = (num_cols - 1) / 2
+        
+        # 手前の行は車体が映るため除外して計算
+        exclude_rows = min(self.params.exclude_bottom_rows, num_rows - 1)
+        effective_rows = num_rows - exclude_rows
+        
+        if effective_rows <= 0:
+            return [int(center_col)] * num_rows
+        
+        # 各行で通行可能領域の重心を計算
+        row_centers = []
+        for row in range(effective_rows):
+            total_weight = 0.0
+            weighted_sum = 0.0
+            
+            for col in range(num_cols):
+                value = grid[row][col]
+                # -1.0は画面外なのでスキップ
+                if value < 0:
+                    continue
+                if value > self.params.grid_passable_threshold:
+                    # 中央に近いほどボーナス
+                    center_bonus = 1.0 + 0.2 * (1.0 - abs(col - center_col) / center_col) if center_col > 0 else 1.0
+                    weight = value * center_bonus
+                    weighted_sum += col * weight
+                    total_weight += weight
+            
+            if total_weight > 0:
+                row_center = weighted_sum / total_weight
+            else:
+                row_center = center_col
+            
+            row_centers.append(row_center)
+        
+        # 滑らかな経路を生成（移動平均）
+        smoothed_path = []
+        window_size = 3
+        
+        for i in range(len(row_centers)):
+            start = max(0, i - window_size // 2)
+            end = min(len(row_centers), i + window_size // 2 + 1)
+            avg = sum(row_centers[start:end]) / (end - start)
+            smoothed_path.append(round(avg))
+        
+        # 除外した手前の行には、最後の有効な値を使用
+        last_col = smoothed_path[-1] if smoothed_path else int(center_col)
+        for _ in range(exclude_rows):
+            smoothed_path.append(last_col)
+        
+        # 整数に変換し範囲内に収める
+        path = [max(0, min(num_cols - 1, int(c))) for c in smoothed_path]
+        
+        return path
+    
+    def _compute_steering_from_path(self, path: List[int], num_cols: int) -> float:
+        """
+        経路からステアリング値を計算
+        
+        手前の行（すぐ前）を重視してステアリングを計算。
+        """
+        if not path or num_cols <= 1:
+            return 0.0
+        
+        center = (num_cols - 1) / 2
+        
+        # 手前の行を重視する重み付け
+        # path[0] = 奥、path[-1] = 手前
+        weights = []
+        for i in range(len(path)):
+            # 手前ほど重みが大きい（指数的）
+            weight = 2.0 ** (i / len(path))
+            weights.append(weight)
+        
+        total_weight = sum(weights)
+        weighted_col = sum(path[i] * weights[i] for i in range(len(path))) / total_weight
+        
+        # 中央からのオフセットを-1～1に正規化
+        steering = (weighted_col - center) / center if center > 0 else 0.0
+        
+        return max(-1.0, min(1.0, steering))
+    
+    def build_grid_from_mask(self, road_mask: np.ndarray) -> List[List[float]]:
+        """
+        ROADマスクからグリッドセル分析を構築
+        
+        Args:
+            road_mask: 二値マスク (H, W)
+            
+        Returns:
+            cell_analysis: グリッドセルの通行可能性 [row][col]
+        """
+        h, w = road_mask.shape[:2]
+        
+        # 二値マスクに変換
+        if road_mask.dtype != bool:
+            binary_mask = (road_mask == 1)
+        else:
+            binary_mask = road_mask
+        
+        num_rows = self.params.grid_rows
+        num_cols = self.params.grid_cols
+        
+        row_height = h // num_rows
+        col_width = w // num_cols
+        
+        cell_analysis = []
+        for row in range(num_rows):
+            row_values = []
+            y_start = row * row_height
+            y_end = (row + 1) * row_height if row < num_rows - 1 else h
+            
+            for col in range(num_cols):
+                x_start = col * col_width
+                x_end = (col + 1) * col_width if col < num_cols - 1 else w
+                
+                cell = binary_mask[y_start:y_end, x_start:x_end]
+                if cell.size > 0:
+                    ratio = cell.sum() / cell.size
+                else:
+                    ratio = 0.0
+                
+                row_values.append(float(ratio))
+            
+            cell_analysis.append(row_values)
+        
+        return cell_analysis
+    
+    # =========================================================================
+    # 重心ベース計算（従来方式）
+    # =========================================================================
     
     def analyze_road_mask(self, road_mask: np.ndarray) -> CameraAnalysis:
         """
@@ -108,11 +394,9 @@ class SteeringCalculator:
         
         # ROAD重心計算（下部重み付け）
         if road_ratio > 0.01:
-            # 縦方向の重み（下部ほど重い）
             weights = np.linspace(self.params.far_weight, self.params.near_weight, h).reshape(-1, 1)
             weighted_mask = binary_mask.astype(float) * weights
             
-            # X方向の重心
             x_coords = np.arange(w)
             weighted_sum = weighted_mask.sum()
             if weighted_sum > 0:
@@ -134,9 +418,9 @@ class SteeringCalculator:
             timestamp=time.time()
         )
     
-    def calculate_steering(self, analysis: CameraAnalysis) -> SteeringCommand:
+    def calculate_steering_centroid(self, analysis: CameraAnalysis) -> SteeringCommand:
         """
-        単一カメラの分析からステアリングを計算
+        重心ベースのステアリング計算（従来方式）
         
         Args:
             analysis: CameraAnalysis結果
@@ -153,10 +437,8 @@ class SteeringCalculator:
             )
         
         # 重心からステアリング計算
-        # centroid_x: 0=左端, 0.5=中央, 1=右端
-        # steering: -1=左, 0=中央, +1=右
-        offset = analysis.centroid_x - 0.5  # -0.5 〜 +0.5
-        raw_steering = offset * 2 * self.params.steering_gain  # -gain 〜 +gain
+        offset = analysis.centroid_x - 0.5
+        raw_steering = offset * 2 * self.params.steering_gain
         
         # デッドゾーン処理
         if abs(raw_steering) < self.params.steering_deadzone:
@@ -165,7 +447,7 @@ class SteeringCalculator:
         # クリップ
         steering = np.clip(raw_steering, -self.params.steering_max, self.params.steering_max)
         
-        # 境界補正（壁があれば反対方向に補正）
+        # 境界補正
         if analysis.boundary_left and steering < 0.1:
             steering = max(steering, 0.1)
         if analysis.boundary_right and steering > -0.1:
@@ -187,66 +469,12 @@ class SteeringCalculator:
             raw_steering=raw_steering
         )
     
-    def calculate_dual_camera(
-        self,
-        front_analysis: CameraAnalysis,
-        ground_analysis: CameraAnalysis
-    ) -> SteeringCommand:
-        """
-        デュアルカメラ（正面+足元）からステアリングを計算
-        
-        正面カメラ: 戦略的な方向決定
-        足元カメラ: 即時の安全確認
-        """
-        # 足元でROAD不足なら緊急停止
-        if ground_analysis.road_ratio < self.params.road_stop_threshold:
-            return SteeringCommand(
-                steering=0.0,
-                throttle=0.0,
-                stop=True,
-                reason=f"足元ROAD不足: {ground_analysis.road_ratio:.1%}",
-                road_ratio=ground_analysis.road_ratio
-            )
-        
-        # 基本は正面カメラでステアリング計算
-        front_cmd = self.calculate_steering(front_analysis)
-        
-        if front_cmd.stop:
-            # 正面もROAD不足なら停止
-            return front_cmd
-        
-        steering = front_cmd.steering
-        
-        # 足元の状況で補正
-        if ground_analysis.boundary_left and steering < 0.15:
-            steering = max(steering, 0.15)
-        if ground_analysis.boundary_right and steering > -0.15:
-            steering = min(steering, -0.15)
-        
-        # スロットル計算（足元のROAD比率も考慮）
-        effective_road_ratio = min(front_analysis.road_ratio, ground_analysis.road_ratio)
-        throttle = self._calculate_throttle(steering, effective_road_ratio)
-        
-        # 理由生成
-        reason_parts = [front_cmd.reason]
-        if ground_analysis.boundary_left:
-            reason_parts.append("左壁")
-        if ground_analysis.boundary_right:
-            reason_parts.append("右壁")
-        
-        return SteeringCommand(
-            steering=round(steering, 3),
-            throttle=round(throttle, 3),
-            stop=False,
-            reason=" / ".join(reason_parts),
-            road_ratio=effective_road_ratio,
-            centroid_x=front_analysis.centroid_x,
-            raw_steering=front_cmd.raw_steering
-        )
+    # =========================================================================
+    # 共通ユーティリティ
+    # =========================================================================
     
     def _calculate_throttle(self, steering: float, road_ratio: float) -> float:
         """スロットル計算"""
-        # 基本スロットル
         throttle = self.params.throttle_base
         
         # カーブ時は減速
@@ -260,16 +488,12 @@ class SteeringCalculator:
             slow_factor = road_ratio / self.params.road_slow_threshold
             throttle *= slow_factor
         
-        # クリップ
-        throttle = np.clip(throttle, self.params.throttle_min, self.params.throttle_max)
-        
-        return throttle
+        return np.clip(throttle, self.params.throttle_min, self.params.throttle_max)
     
     def _generate_reason(self, steering: float, analysis: CameraAnalysis) -> str:
         """判断理由を生成"""
         parts = []
         
-        # ステアリング方向
         if steering < -0.3:
             parts.append("左旋回")
         elif steering > 0.3:
@@ -281,7 +505,6 @@ class SteeringCalculator:
         else:
             parts.append("直進")
         
-        # ROAD状況
         parts.append(f"ROAD:{analysis.road_ratio:.0%}")
         
         return " ".join(parts)
@@ -290,11 +513,14 @@ class SteeringCalculator:
         """パラメータを更新"""
         for key, value in kwargs.items():
             if hasattr(self.params, key):
+                if key == 'mode' and isinstance(value, str):
+                    value = SteeringMode(value)
                 setattr(self.params, key, value)
     
     def get_params(self) -> dict:
         """現在のパラメータを取得"""
         return {
+            "mode": self.params.mode.value,
             "steering_gain": self.params.steering_gain,
             "steering_deadzone": self.params.steering_deadzone,
             "steering_max": self.params.steering_max,
@@ -306,7 +532,19 @@ class SteeringCalculator:
             "road_slow_threshold": self.params.road_slow_threshold,
             "near_weight": self.params.near_weight,
             "far_weight": self.params.far_weight,
+            "grid_rows": self.params.grid_rows,
+            "grid_cols": self.params.grid_cols,
+            "grid_passable_threshold": self.params.grid_passable_threshold,
+            "exclude_bottom_rows": self.params.exclude_bottom_rows,
         }
+    
+    def set_mode(self, mode: str):
+        """計算モードを設定"""
+        self.params.mode = SteeringMode(mode)
+    
+    def get_mode(self) -> str:
+        """現在の計算モードを取得"""
+        return self.params.mode.value
 
 
 # シングルトンインスタンス
