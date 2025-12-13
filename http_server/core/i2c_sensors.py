@@ -215,7 +215,7 @@ class BNO055OperationMode(IntEnum):
 class BNO055Sensor:
     """BNO055 9軸IMUセンサー"""
     
-    DEFAULT_ADDRESS = 0x28  # AD0=LOW の場合
+    DEFAULT_ADDRESS = 0x29  # AD0=HIGH の場合 (FaBo JetRacer標準)
     CHIP_ID_VALUE = 0xA0
     
     def __init__(self, bus: int = 7, address: int = DEFAULT_ADDRESS):
@@ -446,13 +446,21 @@ class FaBoJetRacerPWMReader:
             data.ch2 = (raw[4] << 24) | (raw[5] << 16) | (raw[6] << 8) | raw[7]
             data.ch3 = (raw[8] << 24) | (raw[9] << 16) | (raw[10] << 8) | raw[11]
             
+            # 異常値チェック（プロポ未接続時は異常な値が返る）
+            if not self._is_valid_pwm(data.ch1) or not self._is_valid_pwm(data.ch2):
+                data.mode = "no_signal"
+                data.valid = False
+                return data
+            
             # 正規化 (-1.0 ~ 1.0)
             data.ch1_normalized = self._normalize_pwm(data.ch1)
             data.ch2_normalized = self._normalize_pwm(data.ch2)
             data.ch3_normalized = self._normalize_pwm(data.ch3)
             
             # モード判定
-            if data.ch3 < self.MODE_RC_THRESHOLD:
+            if not self._is_valid_pwm(data.ch3):
+                data.mode = "no_signal"  # CH3が無効な場合
+            elif data.ch3 < self.MODE_RC_THRESHOLD:
                 data.mode = "rc"
             elif data.ch3 > self.MODE_AI_THRESHOLD:
                 data.mode = "ai"
@@ -465,6 +473,10 @@ class FaBoJetRacerPWMReader:
             print(f"[FaBoPWM] Read error: {e}")
             
         return data
+    
+    def _is_valid_pwm(self, pulse_us: int) -> bool:
+        """PWM値が有効範囲内かチェック（500-2500μsを許容）"""
+        return 500 <= pulse_us <= 2500
     
     def _normalize_pwm(self, pulse_us: int) -> float:
         """PWMパルス幅を正規化"""
@@ -637,6 +649,10 @@ class I2CSensorManager:
         # VL53L7CX
         if addr == 0x33:
             return {"name": "VL53L7CX ToF Sensor", "type": "distance"}
+        
+        # OLEDディスプレイ (SSD1306/SSD1309)
+        if addr == 0x3C or addr == 0x3D:
+            return {"name": "OLED Display (SSD1306)", "type": "display"}
             
         # PCA9685（サーボドライバ）
         if addr == 0x40:

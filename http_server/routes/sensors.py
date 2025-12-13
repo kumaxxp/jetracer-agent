@@ -64,14 +64,14 @@ def initialize_sensor(req: InitRequest):
     """センサー初期化
     
     sensor_type:
-    - "imu": BNO055 (default: 0x28)
+    - "imu": BNO055 (default: 0x29 for FaBo JetRacer)
     - "pwm_input": FaBo JetRacer PWM (default: 0x08)
     - "distance": VL53L7CX (default: 0x33)
     """
     result = {"timestamp": datetime.now().isoformat(), "success": False}
     
     if req.sensor_type == "imu":
-        address = req.address or 0x28
+        address = req.address or 0x29  # FaBo JetRacerはAD0=HIGHなので0x29
         success = sensor_manager.initialize_imu(address)
         result["success"] = success
         result["sensor"] = "BNO055"

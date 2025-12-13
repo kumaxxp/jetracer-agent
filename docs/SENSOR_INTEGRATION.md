@@ -82,15 +82,15 @@ ESP32S3ボードの外部LEDを制御できます:
 
 ```bash
 # 初期化
-curl -X POST "http://jetson:8000/sensors/init" \
+curl -X POST "http://192.168.1.65:8000/sensors/init" \
   -H "Content-Type: application/json" \
   -d '{"sensor_type": "pwm_input"}'
 
 # データ読み取り
-curl "http://jetson:8000/sensors/pwm_input"
+curl "http://192.168.1.65:8000/sensors/pwm_input"
 
 # LED制御
-curl -X POST "http://jetson:8000/sensors/led/green"
+curl -X POST "http://192.168.1.65:8000/sensors/led/green"
 ```
 
 ## 4. BNO055 9軸IMU
@@ -126,12 +126,12 @@ BNO055は自動キャリブレーションを行いますが、最良の結果�
 
 ```bash
 # 初期化
-curl -X POST "http://jetson:8000/sensors/init" \
+curl -X POST "http://192.168.1.65:8000/sensors/init" \
   -H "Content-Type: application/json" \
   -d '{"sensor_type": "imu"}'
 
 # データ読み取り
-curl "http://jetson:8000/sensors/imu"
+curl "http://192.168.1.65:8000/sensors/imu"
 ```
 
 ## 5. VL53L7CX 距離計（将来実装）
