@@ -2,15 +2,17 @@
 # ★★★ 最重要: PWMを最初にインポートして安全な状態にする ★★★
 # 他のモジュールがI2Cバスにアクセスする前にPCA9685を初期化
 print("[Server] === EARLY INIT: PWM Controller ===")
+_early_pwm = None
 try:
     from .core.pwm_control import get_pwm_controller
     _early_pwm = get_pwm_controller()
     if _early_pwm.is_available():
         print(f"[Server] PWM early init SUCCESS: stop={_early_pwm.params.get('pwm_speed', {}).get('stop', 'N/A')}")
     else:
-        print("[Server] PWM early init: not available")
+        print("[Server] PWM early init: not available (will retry later)")
 except Exception as e:
     print(f"[Server] PWM early init FAILED: {e}")
+    print("[Server] Will continue without PWM - manual restart may be needed")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

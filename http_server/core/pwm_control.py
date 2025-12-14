@@ -85,76 +85,61 @@ class PWMController:
     def _initialize_pca9685(self):
         """Initialize PCA9685 chip with safe output sequence.
         
-        重要: ESCが暴走しないように、出力を完全に制御した状態で初期化する。
-        
-        シーケンス:
-        1. 全チャンネルをFULL OFF（出力強制LOW）
-        2. スリープモード
-        3. プリスケール設定
-        4. PWM値を設定（FULL OFFなのでまだ出力されない）
-        5. スリープ解除
-        6. オシレータ安定待ち
-        7. FULL OFF解除（この時点で正しいPWM信号が出力される）
+        重要: ESCが暴走しないように安全に初期化する。
         """
         print("[PWM] === SAFE INIT SEQUENCE ===")
         
-        # ★★★ STEP 1: まず全チャンネルをFULL OFFにする（最重要） ★★★
-        # ALL_LED_OFF_H の bit4 (FULL OFF) をセットすると全チャンネルが強制LOW
-        # これにより、以降の初期化中も出力が安定
-        print("[PWM] Step 1: Forcing ALL channels to FULL OFF (output forced LOW)")
-        self.bus.write_byte_data(self.address, self.ALL_LED_OFF_H, 0x10)  # FULL OFF
-        time.sleep(0.005)
-        
-        # ★★★ STEP 2: PCA9685をスリープモードに ★★★
-        print("[PWM] Step 2: Entering sleep mode for configuration")
-        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, 0x10)  # Sleep
-        time.sleep(0.005)
-        
-        # ★★★ STEP 3: PWM周波数を設定（スリープ中のみ可能） ★★★
-        prescale = int(25000000.0 / (4096.0 * self.pwm_freq) - 1)
-        print(f"[PWM] Step 3: Setting prescale to {prescale} ({self.pwm_freq}Hz)")
-        self.bus.write_byte_data(self.address, self.PCA9685_PRESCALE, prescale)
-        time.sleep(0.005)
-        
-        # ★★★ STEP 4: 安全なPWM値を設定（FULL OFFなのでまだ出力されない） ★★★
-        print(f"[PWM] Step 4: Pre-setting safe PWM values (throttle={self.safe_throttle_value}, steering={self.safe_steering_value})")
-        # スロットル (CH1) - STOP値
-        self._set_pwm_raw(1, self.safe_throttle_value)
-        # ステアリング (CH0) - CENTER値
-        self._set_pwm_raw(0, self.safe_steering_value)
-        time.sleep(0.005)
-        
-        # ★★★ STEP 5: スリープ解除 ★★★
-        # FULL OFFはまだ維持したまま
-        print("[PWM] Step 5: Waking up (FULL OFF still active)")
-        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, 0x20)  # Auto-increment, no sleep
-        time.sleep(0.001)  # オシレータ再起動待ち (500μs以上)
-        
-        # ★★★ STEP 6: オシレータ安定待ち ★★★
-        # PCA9685のデータシートによると、スリープ解除後約500μsでオシレータが安定
-        # 安全のため10ms待機
-        print("[PWM] Step 6: Waiting for oscillator to stabilize (10ms)")
-        time.sleep(0.010)
-        
-        # ★★★ STEP 7: FULL OFFを解除してPWM出力開始 ★★★
-        # この時点で初めて安全なPWM値が出力される
-        print("[PWM] Step 7: Releasing FULL OFF - PWM output now active with safe values")
-        self.bus.write_byte_data(self.address, self.ALL_LED_OFF_H, 0x00)  # FULL OFF解除
-        time.sleep(0.005)
-        
-        # MODE2設定（トータムポール出力）
-        self.bus.write_byte_data(self.address, self.PCA9685_MODE2, 0x04)  # Totem-pole
-        
-        # ★★★ STEP 8: 安全値を再送信（確実に） ★★★
-        # ESCが確実にSTOPを認識するように、複数回送信
-        print("[PWM] Step 8: Sending safe values multiple times for ESC recognition")
-        for i in range(5):
-            self._set_pwm_raw(1, self.safe_throttle_value)  # スロットル STOP
-            self._set_pwm_raw(0, self.safe_steering_value)  # ステアリング CENTER
-            time.sleep(0.020)  # 20ms間隔で送信
-        
-        print("[PWM] === SAFE INIT COMPLETE ===")
-        print(f"[PWM] Throttle CH1 = {self.safe_throttle_value}, Steering CH0 = {self.safe_steering_value}")
+        try:
+            # ★★★ STEP 1: デバイス存在確認 ★★★
+            print("[PWM] Step 1: Checking device presence")
+            mode1 = self.bus.read_byte_data(self.address, self.PCA9685_MODE1)
+            print(f"[PWM] Device found, MODE1 = 0x{mode1:02X}")
+            
+            # ★★★ STEP 2: スリープモードに入る ★★★
+            print("[PWM] Step 2: Entering sleep mode")
+            self.bus.write_byte_data(self.address, self.PCA9685_MODE1, 0x10)  # Sleep
+            time.sleep(0.005)
+            
+            # ★★★ STEP 3: PWM周波数を設定（スリープ中のみ可能） ★★★
+            prescale = int(25000000.0 / (4096.0 * self.pwm_freq) - 1)
+            print(f"[PWM] Step 3: Setting prescale to {prescale} ({self.pwm_freq}Hz)")
+            self.bus.write_byte_data(self.address, self.PCA9685_PRESCALE, prescale)
+            time.sleep(0.005)
+            
+            # ★★★ STEP 4: 安全なPWM値を先に設定（スリープ中なのでまだ出力されない） ★★★
+            print(f"[PWM] Step 4: Pre-setting safe PWM values (throttle={self.safe_throttle_value}, steering={self.safe_steering_value})")
+            # スロットル (CH1) - STOP値
+            self._set_pwm_raw(1, self.safe_throttle_value)
+            # ステアリング (CH0) - CENTER値
+            self._set_pwm_raw(0, self.safe_steering_value)
+            time.sleep(0.005)
+            
+            # ★★★ STEP 5: スリープ解除 ★★★
+            print("[PWM] Step 5: Waking up with AUTO-INCREMENT")
+            self.bus.write_byte_data(self.address, self.PCA9685_MODE1, 0x20)  # Auto-increment, no sleep
+            time.sleep(0.005)
+            
+            # ★★★ STEP 6: オシレータ安定待ち ★★★
+            print("[PWM] Step 6: Waiting for oscillator to stabilize")
+            time.sleep(0.010)
+            
+            # ★★★ STEP 7: MODE2設定 ★★★
+            print("[PWM] Step 7: Setting MODE2 (totem-pole output)")
+            self.bus.write_byte_data(self.address, self.PCA9685_MODE2, 0x04)  # Totem-pole
+            
+            # ★★★ STEP 8: 安全値を再送信（ESCが確実にSTOPを認識） ★★★
+            print("[PWM] Step 8: Sending safe values multiple times for ESC recognition")
+            for i in range(5):
+                self._set_pwm_raw(1, self.safe_throttle_value)  # スロットル STOP
+                self._set_pwm_raw(0, self.safe_steering_value)  # ステアリング CENTER
+                time.sleep(0.020)  # 20ms間隔で送信
+            
+            print("[PWM] === SAFE INIT COMPLETE ===")
+            print(f"[PWM] Throttle CH1 = {self.safe_throttle_value}, Steering CH0 = {self.safe_steering_value}")
+            
+        except Exception as e:
+            print(f"[PWM] Init error at some step: {e}")
+            raise
     
     def _set_pwm_raw(self, channel: int, value: int):
         """低レベルPWM設定（初期化用）"""
