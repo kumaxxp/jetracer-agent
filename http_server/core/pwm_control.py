@@ -162,6 +162,9 @@ class JetRacerPWM:
         self.mock = mock
         self._initialized = False
         
+        # Load or create default parameters FIRST (needed for safe init)
+        self.params = self._load_params()
+        
         # Initialize PWM controller
         try:
             if mock:
@@ -169,12 +172,33 @@ class JetRacerPWM:
             else:
                 self.pwm = PWMController(bus_num, address)
             self._initialized = True
+            
+            # CRITICAL: Set safe values immediately after initialization
+            # This prevents runaway on startup
+            self._safe_init()
+            
         except Exception as e:
             print(f"[JetRacerPWM] Failed to initialize: {e}")
             self.pwm = None
+    
+    def _safe_init(self):
+        """Set safe PWM values immediately after initialization."""
+        if not self._initialized or self.pwm is None:
+            return
         
-        # Load or create default parameters
-        self.params = self._load_params()
+        try:
+            # Set throttle to STOP immediately
+            stop_value = self.params.get("pwm_speed", {}).get("stop", 380)
+            self.pwm.set_pwm(self.THROTTLE_CHANNEL, stop_value)
+            print(f"[JetRacerPWM] Safe init: Throttle set to STOP ({stop_value})")
+            
+            # Set steering to CENTER
+            center_value = self.params.get("pwm_steering", {}).get("center", 410)
+            self.pwm.set_pwm(self.STEERING_CHANNEL, center_value)
+            print(f"[JetRacerPWM] Safe init: Steering set to CENTER ({center_value})")
+            
+        except Exception as e:
+            print(f"[JetRacerPWM] Safe init failed: {e}")
     
     def is_available(self) -> bool:
         """Check if PWM controller is available."""
