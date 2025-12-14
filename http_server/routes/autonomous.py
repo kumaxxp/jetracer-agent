@@ -67,6 +67,8 @@ class SafetyParamsUpdate(BaseModel):
 class StepCheckConfigUpdate(BaseModel):
     """Step & Check設定更新"""
     step_distance_m: Optional[float] = None
+    step_time_s: Optional[float] = None        # 移動時間（秒）
+    use_time_based: Optional[bool] = None      # 時間ベース制御
     throttle_speed: Optional[float] = None
     confirm_time_s: Optional[float] = None
     imu_stop_accel_thresh: Optional[float] = None
@@ -74,7 +76,8 @@ class StepCheckConfigUpdate(BaseModel):
     lidar_safe_distance_mm: Optional[int] = None
     lidar_check_rows: Optional[int] = None
     steering_gain: Optional[float] = None
-    steering_invert: Optional[bool] = None  # ステアリング反転
+    steering_invert: Optional[bool] = None     # ステアリング反転
+    steering_deadzone: Optional[float] = None  # ステアリングデッドゾーン
 
 
 class CollectStartRequest(BaseModel):
@@ -576,6 +579,8 @@ async def get_step_check_config():
     return {
         "config": {
             "step_distance_m": controller.config.step_distance_m,
+            "step_time_s": controller.config.step_time_s,
+            "use_time_based": controller.config.use_time_based,
             "throttle_speed": controller.config.throttle_speed,
             "confirm_time_s": controller.config.confirm_time_s,
             "imu_stop_accel_thresh": controller.config.imu_stop_accel_thresh,
@@ -584,6 +589,7 @@ async def get_step_check_config():
             "lidar_check_rows": controller.config.lidar_check_rows,
             "steering_gain": controller.config.steering_gain,
             "steering_invert": controller.config.steering_invert,
+            "steering_deadzone": controller.config.steering_deadzone,
         },
         "timestamp": datetime.now().isoformat()
     }

@@ -40,7 +40,9 @@ class StepCheckState(Enum):
 class StepCheckConfig:
     """Step & Check 設定"""
     # 移動パラメータ
-    step_distance_m: float = 1.0        # 1回の移動距離 (m)
+    step_distance_m: float = 0.5        # 1回の移動距離 (m) - 短めに設定
+    step_time_s: float = 1.0            # 1回の移動時間 (s) - 時間ベースで制御
+    use_time_based: bool = True         # True=時間ベース, False=距離推定ベース
     throttle_speed: float = 0.2         # 移動時スロットル (0.0-1.0) - 安全のため低め
     
     # 停止確認
@@ -55,6 +57,7 @@ class StepCheckConfig:
     # ステアリング
     steering_gain: float = 1.0          # ステアリングゲイン（低めに開始）
     steering_invert: bool = False       # ステアリング反転フラグ
+    steering_deadzone: float = 0.1      # ステアリングデッドゾーン
     
     # タイムアウト
     move_timeout_s: float = 10.0        # 移動タイムアウト
@@ -330,15 +333,30 @@ class StepCheckController:
             cell_analysis = self.steering_calc.build_grid_from_mask(mask)
             command = self.steering_calc.calculate_steering_grid(cell_analysis)
             
+            # デバッグ: グリッド分析結果を出力
+            print(f"[StepCheck] Grid analysis:")
+            for i, row in enumerate(cell_analysis):
+                print(f"  Row {i}: {[f'{v:.2f}' for v in row]}")
+            print(f"[StepCheck] Recommended path: {command.recommended_path}")
+            print(f"[StepCheck] Raw command: steering={command.steering:.3f}, reason={command.reason}")
+            
             # ステアリングにゲインを適用
             raw_steering = command.steering
+            
+            # デッドゾーン処理（小さな値は0に）
+            if abs(raw_steering) < self.config.steering_deadzone:
+                raw_steering = 0.0
+                print(f"[StepCheck] Steering in deadzone, set to 0")
+            
+            # 反転
             if self.config.steering_invert:
                 raw_steering = -raw_steering
             
+            # ゲイン適用
             self.status.planned_steering = raw_steering * self.config.steering_gain
             self.status.planned_steering = max(-1.0, min(1.0, self.status.planned_steering))
             
-            print(f"[StepCheck] Planned steering: {self.status.planned_steering:.2f} (raw: {raw_steering:.2f}, gain: {self.config.steering_gain})")
+            print(f"[StepCheck] Final steering: {self.status.planned_steering:.2f} (raw: {command.steering:.2f}, after_dz: {raw_steering:.2f}, gain: {self.config.steering_gain}, invert: {self.config.steering_invert})")
             
             # 移動開始
             self.status.state = StepCheckState.MOVING
@@ -353,20 +371,32 @@ class StepCheckController:
     
     def _do_moving(self):
         """MOVING: 目標に向かって移動"""
-        # タイムアウトチェック
+        # 経過時間
         elapsed = time.time() - self.status.current_step_start_time
+        
+        # タイムアウトチェック
         if elapsed > self.config.move_timeout_s:
             print("[StepCheck] Move timeout, stopping")
             self.status.state = StepCheckState.STOPPING
             return
         
-        # 距離推定（簡易：時間ベース）
-        # 実際の速度は不明だが、おおよそ0.3m/sと仮定
-        estimated_speed = 0.3  # m/s
-        estimated_distance = elapsed * estimated_speed
+        # 移動完了判定
+        should_stop = False
         
-        if estimated_distance >= self.config.step_distance_m:
-            print(f"[StepCheck] Step distance reached ({estimated_distance:.2f}m), stopping")
+        if self.config.use_time_based:
+            # 時間ベース: 設定時間経過で停止
+            if elapsed >= self.config.step_time_s:
+                print(f"[StepCheck] Step time reached ({elapsed:.2f}s >= {self.config.step_time_s}s), stopping")
+                should_stop = True
+        else:
+            # 距離推定ベース（従来方式）
+            estimated_speed = 0.3  # m/s
+            estimated_distance = elapsed * estimated_speed
+            if estimated_distance >= self.config.step_distance_m:
+                print(f"[StepCheck] Step distance reached ({estimated_distance:.2f}m), stopping")
+                should_stop = True
+        
+        if should_stop:
             self.status.state = StepCheckState.STOPPING
             return
         
