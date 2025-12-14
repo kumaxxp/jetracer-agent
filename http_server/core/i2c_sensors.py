@@ -885,20 +885,11 @@ class I2CSensorManager:
                 pass
             return {"name": "Unknown (0x28/0x29 address)", "type": "unknown"}
         
-        # VL53L7CX (0x33 - FaBo JetRacer)
-        if addr == 0x33:
-            try:
-                # VL53L7CXのModel IDを確認
-                bus.write_i2c_block_data(addr, 0x00, [0x00])
-                model_id_high = bus.read_byte(addr)
-                bus.write_i2c_block_data(addr, 0x00, [0x01])
-                model_id_low = bus.read_byte(addr)
-                model_id = (model_id_high << 8) | model_id_low
-                if model_id == 0xEBAA:
-                    return {"name": "VL53L7CX ToF Sensor (8x8)", "type": "distance"}
-            except:
-                pass
-            return {"name": "Unknown (0x33 address)", "type": "unknown"}
+        # DFRobot Matrix LiDAR / VL53L7CX (0x30-0x33)
+        if addr in [0x30, 0x31, 0x32, 0x33]:
+            # DFRobotプロトコルで識別を試みる（0x55コマンド）
+            # 直接識別は難しいので、アドレスベースで判定
+            return {"name": "DFRobot Matrix LiDAR (SEN0628)", "type": "distance"}
         
         # OLEDディスプレイ (SSD1306/SSD1309)
         if addr == 0x3C or addr == 0x3D:
@@ -907,6 +898,10 @@ class I2CSensorManager:
         # PCA9685（サーボドライバ）
         if addr == 0x40:
             return {"name": "PCA9685 Servo Driver", "type": "servo"}
+        
+        # TCA9548A I2Cマルチプレクサ（ハブ）(0x70-0x77)
+        if addr in range(0x70, 0x78):
+            return {"name": "TCA9548A I2C Multiplexer", "type": "i2c_hub"}
             
         # MPU6050/MPU9250
         if addr in [0x68, 0x69]:
