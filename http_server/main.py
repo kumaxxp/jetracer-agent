@@ -1,4 +1,17 @@
 """FastAPI HTTP Server エントリーポイント"""
+# ★★★ 最重要: PWMを最初にインポートして安全な状態にする ★★★
+# 他のモジュールがI2Cバスにアクセスする前にPCA9685を初期化
+print("[Server] === EARLY INIT: PWM Controller ===")
+try:
+    from .core.pwm_control import get_pwm_controller
+    _early_pwm = get_pwm_controller()
+    if _early_pwm.is_available():
+        print(f"[Server] PWM early init SUCCESS: stop={_early_pwm.params.get('pwm_speed', {}).get('stop', 'N/A')}")
+    else:
+        print("[Server] PWM early init: not available")
+except Exception as e:
+    print(f"[Server] PWM early init FAILED: {e}")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -16,6 +29,9 @@ async def lifespan(app: FastAPI):
     """起動・終了処理"""
     # 起動時
     print("[Server] Starting JetRacer HTTP API Server...")
+    
+    # 注意: PWMはすでにモジュールインポート時に初期化済み
+    # （main.pyの先頭でget_pwm_controller()を呼び出し済み）
     
     # cuDNN設定（複数モデルの競合を防止）
     try:
@@ -92,25 +108,21 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
-    # ★★★ 重要: 起動時にPWMを強制停止 ★★★
-    # PC側がAUTOモードのままサーバー再起動すると危険なので、
-    # 必ずSTŅP状態から開始する
-    print("[Server] === SAFETY: Forcing all controllers to STOP state ===")
+    # ★★★ PWMの再確認（他の初期化後） ★★★
+    # I2Cセンサー初期化後にPWMが影響を受けていないか再確認
+    print("[Server] === SAFETY CHECK: Re-confirming PWM STOP state ===")
     try:
         from .core.pwm_control import get_pwm_controller
         pwm = get_pwm_controller()
         if pwm.is_available():
-            # スロットルをSTOPに設定
+            # 強制的にSTOPを再送信
             pwm.set_throttle(0.0)
             pwm.set_steering(0.0)
-            print(f"[Server] PWM forced to STOP (throttle=0, steering=0)")
-            print(f"[Server] PWM stop value: {pwm.params.get('pwm_speed', {}).get('stop', 'N/A')}")
+            print(f"[Server] PWM re-confirmed STOP (throttle=0, steering=0)")
         else:
-            print("[Server] PWM not available")
+            print("[Server] PWM not available for re-confirm")
     except Exception as e:
-        print(f"[Server] WARNING: Failed to force PWM stop: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[Server] WARNING: Failed to re-confirm PWM stop: {e}")
     
     # 自律走行コントローラーを初期状態に
     try:

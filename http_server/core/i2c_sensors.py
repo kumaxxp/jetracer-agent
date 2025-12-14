@@ -839,17 +839,40 @@ class I2CSensorManager:
             return 7
         
     def scan_devices(self) -> List[Dict]:
-        """I2Cバスをスキャンしてデバイスを検出"""
+        """I2Cバスをスキャンしてデバイスを検出
+        
+        注意: PCA9685 (0x40) はスキャンをスキップします。
+        I2CスキャンはPCA9685に影響を与え、PWM出力が不定になる可能性があります。
+        """
         devices = []
         
         if not HAS_SMBUS:
             print("[I2C] Cannot scan - smbus not available")
             return devices
+        
+        # ★★★ 重要: スキャンをスキップするアドレス ★★★
+        # PCA9685 (0x40) はI2Cスキャンで影響を受けるためスキップ
+        skip_addresses = {
+            0x40,  # PCA9685 PWMドライバ - スキャンするとサーボが暴走する可能性
+            0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,  # PCA9685の他のアドレス
+        }
             
         try:
             bus = smbus.SMBus(self.bus_num)
             
             for addr in range(0x03, 0x78):  # 有効なI2Cアドレス範囲
+                # スキップアドレスは飛ばす
+                if addr in skip_addresses:
+                    # PCA9685はスキャンせずに存在を仮定して追加
+                    if addr == 0x40:
+                        devices.append({
+                            "address": f"0x{addr:02X}",
+                            "address_int": addr,
+                            "name": "PCA9685 Servo Driver (skipped scan)",
+                            "type": "servo"
+                        })
+                    continue
+                    
                 try:
                     bus.read_byte(addr)
                     device_info = self._identify_device(bus, addr)

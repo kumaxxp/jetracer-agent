@@ -41,13 +41,20 @@ class PWMController:
     
     # PCA9685 Registers
     PCA9685_MODE1 = 0x00
+    PCA9685_MODE2 = 0x01
     PCA9685_PRESCALE = 0xFE
     LED0_ON_L = 0x06
     LED0_ON_H = 0x07
     LED0_OFF_L = 0x08
     LED0_OFF_H = 0x09
+    # 全チャンネル一括制御レジスタ
+    ALL_LED_ON_L = 0xFA
+    ALL_LED_ON_H = 0xFB
+    ALL_LED_OFF_L = 0xFC
+    ALL_LED_OFF_H = 0xFD
     
-    def __init__(self, bus_num: int = 7, address: int = 0x40, pwm_freq: int = 60):
+    def __init__(self, bus_num: int = 7, address: int = 0x40, pwm_freq: int = 60,
+                 safe_throttle_value: int = 380, safe_steering_value: int = 400):
         """
         Initialize PWM controller.
         
@@ -55,10 +62,14 @@ class PWMController:
             bus_num: I2C bus number (7 for Jetson Orin Nano)
             address: PCA9685 I2C address (default 0x40)
             pwm_freq: PWM frequency in Hz (60 for RC servos)
+            safe_throttle_value: Safe throttle PWM value (STOP)
+            safe_steering_value: Safe steering PWM value (CENTER)
         """
         self.bus_num = bus_num
         self.address = address
         self.pwm_freq = pwm_freq
+        self.safe_throttle_value = safe_throttle_value
+        self.safe_steering_value = safe_steering_value
         self.bus = None
         
         try:
@@ -72,20 +83,86 @@ class PWMController:
             raise RuntimeError(f"Failed to initialize PWM controller: {e}")
     
     def _initialize_pca9685(self):
-        """Initialize PCA9685 chip."""
-        # Reset PCA9685
-        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, 0x00)
+        """Initialize PCA9685 chip with safe output sequence.
+        
+        重要: ESCが暴走しないように、出力を完全に制御した状態で初期化する。
+        
+        シーケンス:
+        1. 全チャンネルをFULL OFF（出力強制LOW）
+        2. スリープモード
+        3. プリスケール設定
+        4. PWM値を設定（FULL OFFなのでまだ出力されない）
+        5. スリープ解除
+        6. オシレータ安定待ち
+        7. FULL OFF解除（この時点で正しいPWM信号が出力される）
+        """
+        print("[PWM] === SAFE INIT SEQUENCE ===")
+        
+        # ★★★ STEP 1: まず全チャンネルをFULL OFFにする（最重要） ★★★
+        # ALL_LED_OFF_H の bit4 (FULL OFF) をセットすると全チャンネルが強制LOW
+        # これにより、以降の初期化中も出力が安定
+        print("[PWM] Step 1: Forcing ALL channels to FULL OFF (output forced LOW)")
+        self.bus.write_byte_data(self.address, self.ALL_LED_OFF_H, 0x10)  # FULL OFF
         time.sleep(0.005)
         
-        # Set PWM frequency
-        prescale = int(25000000.0 / (4096.0 * self.pwm_freq) - 1)
-        old_mode = self.bus.read_byte_data(self.address, self.PCA9685_MODE1)
-        new_mode = (old_mode & 0x7F) | 0x10  # Sleep mode
-        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, new_mode)
-        self.bus.write_byte_data(self.address, self.PCA9685_PRESCALE, prescale)
-        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, old_mode)
+        # ★★★ STEP 2: PCA9685をスリープモードに ★★★
+        print("[PWM] Step 2: Entering sleep mode for configuration")
+        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, 0x10)  # Sleep
         time.sleep(0.005)
-        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, old_mode | 0xA1)
+        
+        # ★★★ STEP 3: PWM周波数を設定（スリープ中のみ可能） ★★★
+        prescale = int(25000000.0 / (4096.0 * self.pwm_freq) - 1)
+        print(f"[PWM] Step 3: Setting prescale to {prescale} ({self.pwm_freq}Hz)")
+        self.bus.write_byte_data(self.address, self.PCA9685_PRESCALE, prescale)
+        time.sleep(0.005)
+        
+        # ★★★ STEP 4: 安全なPWM値を設定（FULL OFFなのでまだ出力されない） ★★★
+        print(f"[PWM] Step 4: Pre-setting safe PWM values (throttle={self.safe_throttle_value}, steering={self.safe_steering_value})")
+        # スロットル (CH1) - STOP値
+        self._set_pwm_raw(1, self.safe_throttle_value)
+        # ステアリング (CH0) - CENTER値
+        self._set_pwm_raw(0, self.safe_steering_value)
+        time.sleep(0.005)
+        
+        # ★★★ STEP 5: スリープ解除 ★★★
+        # FULL OFFはまだ維持したまま
+        print("[PWM] Step 5: Waking up (FULL OFF still active)")
+        self.bus.write_byte_data(self.address, self.PCA9685_MODE1, 0x20)  # Auto-increment, no sleep
+        time.sleep(0.001)  # オシレータ再起動待ち (500μs以上)
+        
+        # ★★★ STEP 6: オシレータ安定待ち ★★★
+        # PCA9685のデータシートによると、スリープ解除後約500μsでオシレータが安定
+        # 安全のため10ms待機
+        print("[PWM] Step 6: Waiting for oscillator to stabilize (10ms)")
+        time.sleep(0.010)
+        
+        # ★★★ STEP 7: FULL OFFを解除してPWM出力開始 ★★★
+        # この時点で初めて安全なPWM値が出力される
+        print("[PWM] Step 7: Releasing FULL OFF - PWM output now active with safe values")
+        self.bus.write_byte_data(self.address, self.ALL_LED_OFF_H, 0x00)  # FULL OFF解除
+        time.sleep(0.005)
+        
+        # MODE2設定（トータムポール出力）
+        self.bus.write_byte_data(self.address, self.PCA9685_MODE2, 0x04)  # Totem-pole
+        
+        # ★★★ STEP 8: 安全値を再送信（確実に） ★★★
+        # ESCが確実にSTOPを認識するように、複数回送信
+        print("[PWM] Step 8: Sending safe values multiple times for ESC recognition")
+        for i in range(5):
+            self._set_pwm_raw(1, self.safe_throttle_value)  # スロットル STOP
+            self._set_pwm_raw(0, self.safe_steering_value)  # ステアリング CENTER
+            time.sleep(0.020)  # 20ms間隔で送信
+        
+        print("[PWM] === SAFE INIT COMPLETE ===")
+        print(f"[PWM] Throttle CH1 = {self.safe_throttle_value}, Steering CH0 = {self.safe_steering_value}")
+    
+    def _set_pwm_raw(self, channel: int, value: int):
+        """低レベルPWM設定（初期化用）"""
+        reg_offset = 4 * channel
+        self.bus.write_byte_data(self.address, self.LED0_ON_L + reg_offset, 0)
+        self.bus.write_byte_data(self.address, self.LED0_ON_H + reg_offset, 0)
+        self.bus.write_byte_data(self.address, self.LED0_OFF_L + reg_offset, value & 0xFF)
+        self.bus.write_byte_data(self.address, self.LED0_OFF_H + reg_offset, (value >> 8) & 0x0F)
     
     def set_pwm(self, channel: int, value: int):
         """
@@ -99,12 +176,7 @@ class PWMController:
             raise ValueError(f"Channel must be 0-15, got {channel}")
         
         value = max(0, min(4095, value))
-        
-        reg_offset = 4 * channel
-        self.bus.write_byte_data(self.address, self.LED0_ON_L + reg_offset, 0 & 0xFF)
-        self.bus.write_byte_data(self.address, self.LED0_ON_H + reg_offset, 0 >> 8)
-        self.bus.write_byte_data(self.address, self.LED0_OFF_L + reg_offset, value & 0xFF)
-        self.bus.write_byte_data(self.address, self.LED0_OFF_H + reg_offset, value >> 8)
+        self._set_pwm_raw(channel, value)
     
     def get_pwm(self, channel: int) -> int:
         """Get current PWM value for a channel."""
@@ -169,14 +241,23 @@ class JetRacerPWM:
         
         # Initialize PWM controller
         try:
+            # 安全な値を先に取得
+            safe_throttle = self.params.get("pwm_speed", {}).get("stop", 380)
+            safe_steering = self.params.get("pwm_steering", {}).get("center", 400)
+            
             if mock:
                 self.pwm = PWMControllerMock(bus_num, address)
             else:
-                self.pwm = PWMController(bus_num, address)
+                # 安全な値を渡して初期化
+                self.pwm = PWMController(
+                    bus_num, address,
+                    safe_throttle_value=safe_throttle,
+                    safe_steering_value=safe_steering
+                )
             self._initialized = True
             
-            # CRITICAL: Set safe values immediately after initialization
-            # This prevents runaway on startup
+            # ★ PWMControllerの初期化内で安全値が設定済みなので、
+            # ★ _safe_init()は再確認用
             self._safe_init()
             
         except Exception as e:
