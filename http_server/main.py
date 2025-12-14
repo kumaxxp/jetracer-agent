@@ -92,10 +92,60 @@ async def lifespan(app: FastAPI):
         import traceback
         traceback.print_exc()
 
+    # ★★★ 重要: 起動時にPWMを強制停止 ★★★
+    # PC側がAUTOモードのままサーバー再起動すると危険なので、
+    # 必ずSTŅP状態から開始する
+    print("[Server] === SAFETY: Forcing all controllers to STOP state ===")
+    try:
+        from .core.pwm_control import get_pwm_controller
+        pwm = get_pwm_controller()
+        if pwm.is_available():
+            # スロットルをSTOPに設定
+            pwm.set_throttle(0.0)
+            pwm.set_steering(0.0)
+            print(f"[Server] PWM forced to STOP (throttle=0, steering=0)")
+            print(f"[Server] PWM stop value: {pwm.params.get('pwm_speed', {}).get('stop', 'N/A')}")
+        else:
+            print("[Server] PWM not available")
+    except Exception as e:
+        print(f"[Server] WARNING: Failed to force PWM stop: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # 自律走行コントローラーを初期状態に
+    try:
+        from .core.autonomous_controller import autonomous_controller
+        autonomous_controller.state.running = False
+        autonomous_controller.state.mode = autonomous_controller.state.mode.__class__.INIT
+        print("[Server] Autonomous controller reset to INIT")
+    except Exception as e:
+        print(f"[Server] WARNING: Failed to reset autonomous controller: {e}")
+
     yield
 
     # 終了時
     print("[Server] Shutting down...")
+    
+    # ★★★ 重要: 終了時もPWMを強制停止 ★★★
+    print("[Server] === SAFETY: Forcing PWM to STOP before shutdown ===")
+    try:
+        from .core.pwm_control import get_pwm_controller
+        pwm = get_pwm_controller()
+        if pwm.is_available():
+            pwm.stop()  # 緊急停止
+            print("[Server] PWM stopped")
+    except Exception as e:
+        print(f"[Server] WARNING: Failed to stop PWM: {e}")
+    
+    # 自律走行コントローラーも停止
+    try:
+        from .core.autonomous_controller import autonomous_controller
+        if autonomous_controller.state.running:
+            await autonomous_controller.stop()
+            print("[Server] Autonomous controller stopped")
+    except Exception as e:
+        print(f"[Server] WARNING: Failed to stop autonomous controller: {e}")
+    
     camera_manager.stop()  # 全カメラ停止
 
 
