@@ -74,6 +74,7 @@ class StepCheckConfigUpdate(BaseModel):
     lidar_safe_distance_mm: Optional[int] = None
     lidar_check_rows: Optional[int] = None
     steering_gain: Optional[float] = None
+    steering_invert: Optional[bool] = None  # ステアリング反転
 
 
 class CollectStartRequest(BaseModel):
@@ -582,6 +583,7 @@ async def get_step_check_config():
             "lidar_safe_distance_mm": controller.config.lidar_safe_distance_mm,
             "lidar_check_rows": controller.config.lidar_check_rows,
             "steering_gain": controller.config.steering_gain,
+            "steering_invert": controller.config.steering_invert,
         },
         "timestamp": datetime.now().isoformat()
     }

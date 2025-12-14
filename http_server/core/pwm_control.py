@@ -129,16 +129,18 @@ class JetRacerPWM:
     STEERING_CHANNEL = 0
     THROTTLE_CHANNEL = 1
     
+    # デフォルト値（設定ファイルがない場合のフォールバック）
+    # 安全のため、実際の設定値に合わせる
     DEFAULT_PARAMS = {
         "pwm_steering": {
-            "left": 310,
-            "center": 410,
-            "right": 510
+            "left": 335,
+            "center": 400,
+            "right": 465
         },
         "pwm_speed": {
-            "front": 430,
-            "stop": 410,
-            "back": 390
+            "front": 400,
+            "stop": 380,   # 重要：実際のキャリブレーション値
+            "back": 360
         }
     }
     
@@ -206,16 +208,26 @@ class JetRacerPWM:
     
     def _load_params(self) -> Dict[str, Any]:
         """Load PWM parameters from file or use defaults."""
-        if self.config_path.exists():
-            try:
-                with open(self.config_path) as f:
-                    params = json.load(f)
-                print(f"[JetRacerPWM] Loaded params from {self.config_path}")
-                return params
-            except Exception as e:
-                print(f"[JetRacerPWM] Failed to load params: {e}")
+        # 複数の候補パスを試す
+        candidate_paths = [
+            self.config_path,
+            Path.home() / "projects" / "jetracer-agent" / "configs" / "pwm_params.json",
+            Path("/home/jetson/projects/jetracer-agent/configs/pwm_params.json"),
+        ]
         
-        print("[JetRacerPWM] Using default parameters")
+        for path in candidate_paths:
+            if path.exists():
+                try:
+                    with open(path) as f:
+                        params = json.load(f)
+                    print(f"[JetRacerPWM] Loaded params from {path}")
+                    print(f"[JetRacerPWM] Stop value: {params.get('pwm_speed', {}).get('stop', 'N/A')}")
+                    return params
+                except Exception as e:
+                    print(f"[JetRacerPWM] Failed to load from {path}: {e}")
+        
+        print(f"[JetRacerPWM] WARNING: Using DEFAULT parameters (stop={self.DEFAULT_PARAMS['pwm_speed']['stop']})")
+        print(f"[JetRacerPWM] Tried paths: {[str(p) for p in candidate_paths]}")
         return self.DEFAULT_PARAMS.copy()
     
     def save_params(self, params: Optional[Dict] = None):

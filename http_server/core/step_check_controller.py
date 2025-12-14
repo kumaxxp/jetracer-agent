@@ -41,7 +41,7 @@ class StepCheckConfig:
     """Step & Check 設定"""
     # 移動パラメータ
     step_distance_m: float = 1.0        # 1回の移動距離 (m)
-    throttle_speed: float = 0.5         # 移動時スロットル (0.0-1.0)
+    throttle_speed: float = 0.2         # 移動時スロットル (0.0-1.0) - 安全のため低め
     
     # 停止確認
     confirm_time_s: float = 1.0         # 停止確認時間 (s)
@@ -53,7 +53,8 @@ class StepCheckConfig:
     lidar_check_rows: int = 4           # チェックする上部行数 (0-3)
     
     # ステアリング
-    steering_gain: float = 1.5
+    steering_gain: float = 1.0          # ステアリングゲイン（低めに開始）
+    steering_invert: bool = False       # ステアリング反転フラグ
     
     # タイムアウト
     move_timeout_s: float = 10.0        # 移動タイムアウト
@@ -325,12 +326,19 @@ class StepCheckController:
                 self.status.error_message = "No road detected"
                 return
             
-            # ステアリング計算
-            command = self.steering_calc.calculate(mask)
-            self.status.planned_steering = command.steering * self.config.steering_gain
+            # ステアリング計算（gridモードを使用）
+            cell_analysis = self.steering_calc.build_grid_from_mask(mask)
+            command = self.steering_calc.calculate_steering_grid(cell_analysis)
+            
+            # ステアリングにゲインを適用
+            raw_steering = command.steering
+            if self.config.steering_invert:
+                raw_steering = -raw_steering
+            
+            self.status.planned_steering = raw_steering * self.config.steering_gain
             self.status.planned_steering = max(-1.0, min(1.0, self.status.planned_steering))
             
-            print(f"[StepCheck] Planned steering: {self.status.planned_steering:.2f}")
+            print(f"[StepCheck] Planned steering: {self.status.planned_steering:.2f} (raw: {raw_steering:.2f}, gain: {self.config.steering_gain})")
             
             # 移動開始
             self.status.state = StepCheckState.MOVING
