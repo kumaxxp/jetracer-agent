@@ -24,6 +24,7 @@ from .i2c_sensors import sensor_manager, IMUData, DistanceData
 from .steering_calculator import SteeringCalculator, SteeringCommand
 from .lightweight_segmentation import LightweightSegmentation
 from .camera_manager import camera_manager
+from .distance_grid import distance_grid_manager
 
 
 class StepCheckState(Enum):
@@ -329,12 +330,19 @@ class StepCheckController:
                 self.status.error_message = "No road detected"
                 return
             
-            # ステアリング計算（gridモードを使用）
-            cell_analysis = self.steering_calc.build_grid_from_mask(mask)
+            # パースペクティブ補正されたグリッド分析を使用（UIと同じ）
+            cell_analysis = self._build_perspective_grid(mask, camera_id=0)
+            
+            if not cell_analysis:
+                # フォールバック: 従来の矩形グリッド
+                print("[StepCheck] Falling back to rectangular grid")
+                cell_analysis = self.steering_calc.build_grid_from_mask(mask)
+            
+            # ステアリング計算
             command = self.steering_calc.calculate_steering_grid(cell_analysis)
             
             # デバッグ: グリッド分析結果を出力
-            print(f"[StepCheck] Grid analysis:")
+            print(f"[StepCheck] Grid analysis (perspective):")
             for i, row in enumerate(cell_analysis):
                 print(f"  Row {i}: {[f'{v:.2f}' for v in row]}")
             print(f"[StepCheck] Recommended path: {command.recommended_path}")
@@ -368,6 +376,122 @@ class StepCheckController:
             traceback.print_exc()
             self.status.error_message = str(e)
             time.sleep(0.5)
+    
+    def _build_perspective_grid(self, segmentation: np.ndarray, camera_id: int = 0) -> List[List[float]]:
+        """
+        パースペクティブ補正されたグリッドでセグメンテーションを分析
+        
+        UIのGrid Visualizationと同じロジックを使用
+        """
+        import cv2
+        
+        try:
+            # グリッドデータを取得
+            grid_data = distance_grid_manager.compute_grid_lines(camera_id)
+            
+            h_lines = grid_data.get('horizontal_lines', [])
+            v_lines = grid_data.get('vertical_lines', [])
+            
+            if len(h_lines) < 2 or len(v_lines) < 2:
+                print("[StepCheck] Insufficient grid lines")
+                return []
+            
+            h, w = segmentation.shape
+            road_label_ids = {1}  # 軽量モデル: 1=ROAD
+            
+            # セルポリゴンを計算
+            cell_analysis = []
+            
+            for row in range(len(h_lines) - 1):
+                row_cells = []
+                h_line_top = h_lines[row]['points']
+                h_line_bottom = h_lines[row + 1]['points']
+                
+                for col in range(len(v_lines) - 1):
+                    if col >= len(h_line_top) or col + 1 >= len(h_line_top):
+                        row_cells.append(-1.0)
+                        continue
+                    if col >= len(h_line_bottom) or col + 1 >= len(h_line_bottom):
+                        row_cells.append(-1.0)
+                        continue
+                    
+                    top_left = h_line_top[col]
+                    top_right = h_line_top[col + 1]
+                    bottom_left = h_line_bottom[col]
+                    bottom_right = h_line_bottom[col + 1]
+                    
+                    cell_polygon = [
+                        (int(top_left[0]), int(top_left[1])),
+                        (int(top_right[0]), int(top_right[1])),
+                        (int(bottom_right[0]), int(bottom_right[1])),
+                        (int(bottom_left[0]), int(bottom_left[1]))
+                    ]
+                    
+                    # セル内のROAD比率を計算
+                    road_ratio = self._analyze_cell(segmentation, cell_polygon, road_label_ids)
+                    row_cells.append(road_ratio)
+                
+                cell_analysis.append(row_cells)
+            
+            return cell_analysis
+            
+        except Exception as e:
+            print(f"[StepCheck] Perspective grid error: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def _analyze_cell(self, segmentation: np.ndarray, cell_polygon: List[tuple], road_label_ids: set) -> float:
+        """
+        セル内のROAD比率を計算
+        
+        distance_grid.pyの_analyze_cell()と同じロジック
+        """
+        import cv2
+        
+        h, w = segmentation.shape
+        
+        pts = np.array(cell_polygon, np.int32)
+        
+        # バウンディングボックス
+        orig_x_min = min(p[0] for p in cell_polygon)
+        orig_x_max = max(p[0] for p in cell_polygon)
+        orig_y_min = min(p[1] for p in cell_polygon)
+        orig_y_max = max(p[1] for p in cell_polygon)
+        
+        orig_width = max(1, orig_x_max - orig_x_min)
+        orig_height = max(1, orig_y_max - orig_y_min)
+        
+        x_min = max(0, orig_x_min)
+        x_max = min(w - 1, orig_x_max)
+        y_min = max(0, orig_y_min)
+        y_max = min(h - 1, orig_y_max)
+        
+        if x_min >= x_max or y_min >= y_max:
+            return -1.0
+        
+        clipped_width = x_max - x_min
+        clipped_height = y_max - y_min
+        
+        visible_ratio = (clipped_width * clipped_height) / (orig_width * orig_height)
+        if visible_ratio < 0.5:
+            return -1.0
+        
+        mask = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 1)
+        
+        cell_mask = mask[y_min:y_max+1, x_min:x_max+1]
+        cell_seg = segmentation[y_min:y_max+1, x_min:x_max+1]
+        
+        cell_pixels = cell_seg[cell_mask == 1]
+        
+        if len(cell_pixels) == 0:
+            return -1.0
+        
+        road_pixels = sum(1 for p in cell_pixels if p in road_label_ids)
+        road_ratio = road_pixels / len(cell_pixels)
+        
+        return float(road_ratio)
     
     def _do_moving(self):
         """MOVING: 目標に向かって移動"""
