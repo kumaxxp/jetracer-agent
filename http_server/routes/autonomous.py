@@ -9,6 +9,24 @@ from ..core.steering_calculator import steering_calculator
 from ..core.safety_guard import safety_guard
 from ..core.data_collector import data_collector
 
+# Step & Check Controller (lazy init)
+_step_check_controller = None
+
+def get_step_check_controller():
+    """Step & Check Controllerを取得（遅延初期化）"""
+    global _step_check_controller
+    if _step_check_controller is None:
+        from ..core.step_check_controller import StepCheckController
+        from ..core.lightweight_segmentation import lightweight_segmentation
+        from ..core.pwm_control import pwm_control
+        
+        _step_check_controller = StepCheckController(
+            steering_calc=steering_calculator,
+            segmentation=lightweight_segmentation,
+            pwm_control=pwm_control
+        )
+    return _step_check_controller
+
 router = APIRouter(prefix="/auto", tags=["autonomous"])
 
 
@@ -44,6 +62,18 @@ class SafetyParamsUpdate(BaseModel):
     lidar_enabled: Optional[bool] = None
     imu_enabled: Optional[bool] = None
     road_check_enabled: Optional[bool] = None
+
+
+class StepCheckConfigUpdate(BaseModel):
+    """Step & Check設定更新"""
+    step_distance_m: Optional[float] = None
+    throttle_speed: Optional[float] = None
+    confirm_time_s: Optional[float] = None
+    imu_stop_accel_thresh: Optional[float] = None
+    imu_stop_gyro_thresh: Optional[float] = None
+    lidar_safe_distance_mm: Optional[int] = None
+    lidar_check_rows: Optional[int] = None
+    steering_gain: Optional[float] = None
 
 
 class CollectStartRequest(BaseModel):
@@ -457,3 +487,120 @@ async def debug_safety():
     result["safety"] = status.to_dict()
     
     return result
+
+
+# =============================================================================
+# Step & Check API
+# =============================================================================
+
+@router.post("/step-check/start")
+async def start_step_check():
+    """Step & Checkモードを開始"""
+    controller = get_step_check_controller()
+    
+    success = controller.start()
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to start Step & Check mode")
+    
+    return {
+        "success": True,
+        "message": "Step & Check mode started",
+        "status": controller.get_status(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.post("/step-check/stop")
+async def stop_step_check():
+    """Step & Checkモードを停止"""
+    controller = get_step_check_controller()
+    
+    controller.stop()
+    
+    return {
+        "success": True,
+        "message": "Step & Check mode stopped",
+        "status": controller.get_status(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.post("/step-check/emergency")
+async def emergency_stop_step_check():
+    """Step & Checkの緊急停止"""
+    controller = get_step_check_controller()
+    
+    controller.emergency_stop()
+    
+    return {
+        "success": True,
+        "message": "Step & Check emergency stop triggered",
+        "status": controller.get_status(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.post("/step-check/clear-emergency")
+async def clear_emergency_step_check():
+    """Step & Checkの緊急停止を解除"""
+    controller = get_step_check_controller()
+    
+    controller.clear_emergency()
+    
+    return {
+        "success": True,
+        "message": "Step & Check emergency cleared",
+        "status": controller.get_status(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.get("/step-check/status")
+async def get_step_check_status():
+    """Step & Checkの状態を取得"""
+    controller = get_step_check_controller()
+    
+    return {
+        "status": controller.get_status(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.get("/step-check/config")
+async def get_step_check_config():
+    """Step & Checkの設定を取得"""
+    controller = get_step_check_controller()
+    
+    return {
+        "config": {
+            "step_distance_m": controller.config.step_distance_m,
+            "throttle_speed": controller.config.throttle_speed,
+            "confirm_time_s": controller.config.confirm_time_s,
+            "imu_stop_accel_thresh": controller.config.imu_stop_accel_thresh,
+            "imu_stop_gyro_thresh": controller.config.imu_stop_gyro_thresh,
+            "lidar_safe_distance_mm": controller.config.lidar_safe_distance_mm,
+            "lidar_check_rows": controller.config.lidar_check_rows,
+            "steering_gain": controller.config.steering_gain,
+        },
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@router.put("/step-check/config")
+async def update_step_check_config(req: StepCheckConfigUpdate):
+    """Step & Checkの設定を更新"""
+    controller = get_step_check_controller()
+    
+    updates = {k: v for k, v in req.dict().items() if v is not None}
+    
+    if not updates:
+        raise HTTPException(status_code=400, detail="No parameters to update")
+    
+    controller.update_config(**updates)
+    
+    return {
+        "success": True,
+        "updated": list(updates.keys()),
+        "timestamp": datetime.now().isoformat()
+    }
