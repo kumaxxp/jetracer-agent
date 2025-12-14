@@ -18,12 +18,12 @@ def get_step_check_controller():
     if _step_check_controller is None:
         from ..core.step_check_controller import StepCheckController
         from ..core.lightweight_segmentation import lightweight_segmentation
-        from ..core.pwm_control import pwm_control
+        from ..core.pwm_control import get_pwm_controller
         
         _step_check_controller = StepCheckController(
             steering_calc=steering_calculator,
             segmentation=lightweight_segmentation,
-            pwm_control=pwm_control
+            pwm_control=get_pwm_controller()
         )
     return _step_check_controller
 
