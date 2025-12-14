@@ -5,8 +5,8 @@
     "right": 465
   },
   "pwm_speed": {
-    "front": 395,
-    "stop": 370,
-    "back": 321
+    "front": 400,
+    "stop": 390,
+    "back": 380
   }
 }
