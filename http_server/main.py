@@ -61,11 +61,12 @@ except Exception as e:
 from .core.acoustic_throttle_controller import init_acoustic_throttle_controller, ControllerConfig
 
 try:
-    # Phase 2-B で特定したパラメータ
+    # PWM設定（front=420, stop=390 に基づく）
+    # throttle 0.5 → PWM 405, throttle 0.6 → PWM 408
     _throttle_config = ControllerConfig(
-        startup_pwm=0.147,
-        maintain_pwm=0.067,
-        threshold_pwm=0.117,
+        startup_pwm=0.6,       # 確実に動く
+        maintain_pwm=0.5,      # 低速維持
+        threshold_pwm=0.5,
     )
 
     _throttle_controller = init_acoustic_throttle_controller(

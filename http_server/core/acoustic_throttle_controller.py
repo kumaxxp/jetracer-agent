@@ -29,10 +29,12 @@ class ControlState(Enum):
 @dataclass
 class ControllerConfig:
     """制御パラメータ"""
-    # PWM設定（Phase 2-B分析結果）
-    startup_pwm: float = 0.147      # 起動用
-    maintain_pwm: float = 0.067     # 維持用
-    threshold_pwm: float = 0.117    # 始動検出閾値
+    # PWM設定（front=420, stop=390 に基づく）
+    # throttle 0.5 = stop + 0.5 * (front - stop) = 390 + 0.5 * 30 = 405
+    # throttle 0.6 = stop + 0.6 * (front - stop) = 390 + 0.6 * 30 = 408
+    startup_pwm: float = 0.6        # PWM 408 → 確実に動く
+    maintain_pwm: float = 0.5       # PWM 405 → ギリギリ動く（低速）
+    threshold_pwm: float = 0.5      # 始動検出閾値
 
     # タイミング設定
     startup_timeout: float = 2.0    # 起動タイムアウト（秒）
