@@ -24,6 +24,7 @@ from .core.camera_manager import camera_manager
 from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
 from .core.scenario import init_executor
+from .core.acoustic_inference import init_classifier
 from .config import config
 
 # === シナリオエグゼキュータ初期化 ===
@@ -45,6 +46,16 @@ def _set_steering(value: float):
 # エグゼキュータを初期化
 init_executor(_set_throttle, _set_steering)
 print("[Server] Scenario executor initialized")
+
+# === 音響分類器初期化 ===
+try:
+    _classifier = init_classifier()
+    if _classifier.is_loaded:
+        print(f"[Server] Acoustic classifier loaded: {_classifier.label_names}")
+    else:
+        print("[Server] Acoustic classifier not loaded (model file missing?)")
+except Exception as e:
+    print(f"[Server] Failed to initialize acoustic classifier: {e}")
 
 
 @asynccontextmanager
@@ -282,7 +293,10 @@ def root():
             "POST /acoustic/scenario/start - シナリオ実行開始",
             "POST /acoustic/scenario/stop - シナリオ中断",
             "GET  /acoustic/scenario/status - シナリオ実行状態",
-            "GET  /acoustic/scenario/result - シナリオ実行結果"
+            "GET  /acoustic/scenario/result - シナリオ実行結果",
+            "GET  /acoustic/state/predict - 音響状態を推論",
+            "GET  /acoustic/state/continuous - 継続的な状態監視",
+            "GET  /acoustic/classifier/status - 分類器の状態"
         ]
     }
 

@@ -19,14 +19,21 @@
 - POST /acoustic/scenario/stop     - シナリオ中断
 - GET  /acoustic/scenario/status   - シナリオ実行状態
 - GET  /acoustic/scenario/result   - シナリオ実行結果
+
+推論:
+- GET  /acoustic/state/predict     - 音響状態を推論
+- GET  /acoustic/state/continuous  - 継続的な状態監視
+- GET  /acoustic/classifier/status - 分類器の状態
 """
 
+import time
 from fastapi import APIRouter, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 from dataclasses import asdict
 
 from ..core.acoustic import AcousticManager
 from ..core.scenario import ScenarioType, SCENARIOS, get_executor
+from ..core.acoustic_inference import get_classifier
 
 router = APIRouter(prefix="/acoustic", tags=["acoustic"])
 
@@ -76,6 +83,21 @@ async def stop_capture():
         return {"status": "stopped"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# === PC互換エイリアス ===
+# PC側クライアントが /acoustic/capture/start を呼び出すため
+
+@router.post("/capture/start")
+async def start_capture_alias():
+    """音響キャプチャ開始（/capture/start エイリアス）"""
+    return await start_capture()
+
+
+@router.post("/capture/stop")
+async def stop_capture_alias():
+    """音響キャプチャ停止（/capture/stop エイリアス）"""
+    return await stop_capture()
 
 
 @router.get("/status")
@@ -252,3 +274,127 @@ async def get_scenario_result():
         raise HTTPException(status_code=404, detail="No result available")
 
     return result.to_dict()
+
+
+# === 推論エンドポイント ===
+
+@router.get("/state/predict")
+async def predict_state(pwm_throttle: float = 0.0):
+    """
+    現在の音響状態を推論
+
+    Args:
+        pwm_throttle: 現在のスロットルPWM値（クエリパラメータ）
+
+    Returns:
+        推論結果（状態、信頼度、全クラス確率）
+    """
+    # 分類器取得
+    classifier = get_classifier()
+    if classifier is None or not classifier.is_loaded:
+        raise HTTPException(
+            status_code=503,
+            detail="Acoustic classifier not available"
+        )
+
+    # 音響マネージャー取得
+    manager = AcousticManager.get_instance()
+    if not manager.is_capturing():
+        raise HTTPException(
+            status_code=400,
+            detail="Audio capture not running. Call /acoustic/start first"
+        )
+
+    # 最新の特徴量取得
+    features = manager.get_current_features()
+    if features is None:
+        raise HTTPException(
+            status_code=503,
+            detail="No audio features available"
+        )
+
+    # 推論（全クラス確率付き）
+    state, probabilities = classifier.predict_with_all_probs(features, pwm_throttle)
+
+    if state is None:
+        raise HTTPException(
+            status_code=500,
+            detail="Prediction failed"
+        )
+
+    return {
+        "state": state,
+        "confidence": probabilities[state],
+        "probabilities": probabilities,
+        "pwm_throttle": pwm_throttle,
+        "timestamp": time.time()
+    }
+
+
+@router.get("/state/continuous")
+async def get_continuous_state(
+    pwm_throttle: float = 0.0,
+    include_features: bool = False
+):
+    """
+    継続的な状態監視用エンドポイント
+
+    特徴量も含めた詳細情報を返す（デバッグ用）
+    """
+    classifier = get_classifier()
+    manager = AcousticManager.get_instance()
+
+    if not manager.is_capturing():
+        return {
+            "status": "not_running",
+            "state": None,
+            "timestamp": time.time()
+        }
+
+    features = manager.get_current_features()
+
+    result = {
+        "status": "running",
+        "timestamp": time.time(),
+        "pwm_throttle": pwm_throttle
+    }
+
+    if features is None:
+        result["state"] = None
+        result["error"] = "No features"
+    elif classifier is None or not classifier.is_loaded:
+        result["state"] = None
+        result["error"] = "Classifier not loaded"
+    else:
+        state, probs = classifier.predict_with_all_probs(features, pwm_throttle)
+        result["state"] = state
+        result["probabilities"] = probs
+        result["confidence"] = probs[state] if probs else None
+
+    if include_features and features:
+        result["features"] = {
+            "rms_energy": features.rms_energy,
+            "spectral_centroid": features.spectral_centroid,
+            "zcr": features.zcr,
+            "mfcc_mean_0": features.mfcc_mean[0] if features.mfcc_mean else None
+        }
+
+    return result
+
+
+@router.get("/classifier/status")
+async def get_classifier_status():
+    """分類器の状態を取得"""
+    classifier = get_classifier()
+
+    if classifier is None:
+        return {
+            "loaded": False,
+            "error": "Classifier not initialized"
+        }
+
+    return {
+        "loaded": classifier.is_loaded,
+        "model_path": str(classifier.model_path),
+        "labels": classifier.label_names if classifier.is_loaded else []
+    }
