@@ -19,11 +19,32 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous, acoustic
 from .core.camera_manager import camera_manager
 from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
+from .core.scenario import init_executor
 from .config import config
+
+# === シナリオエグゼキュータ初期化 ===
+# PWMコントローラーを使ってスロットル・ステアリングを設定
+def _set_throttle(value: float):
+    """スロットル設定（-1.0 ~ 1.0）"""
+    if _early_pwm and _early_pwm.is_available():
+        _early_pwm.set_throttle(value)
+    else:
+        print(f"[Scenario] Throttle: {value:.3f} (PWM not available)")
+
+def _set_steering(value: float):
+    """ステアリング設定（-1.0 ~ 1.0）"""
+    if _early_pwm and _early_pwm.is_available():
+        _early_pwm.set_steering(value)
+    else:
+        print(f"[Scenario] Steering: {value:.3f} (PWM not available)")
+
+# エグゼキュータを初期化
+init_executor(_set_throttle, _set_steering)
+print("[Server] Scenario executor initialized")
 
 
 @asynccontextmanager
@@ -196,6 +217,7 @@ app.include_router(benchmark.router, prefix="/benchmark", tags=["benchmark"])
 app.include_router(sensors.router, tags=["sensors"])
 app.include_router(pwm.router, tags=["pwm"])
 app.include_router(autonomous.router, tags=["autonomous"])
+app.include_router(acoustic.router, tags=["acoustic"])
 
 
 @app.get("/")
@@ -245,7 +267,22 @@ def root():
             "GET  /sensors/imu - IMUデータ読み取り",
             "GET  /sensors/pwm_input - PWM入力読み取り",
             "GET  /sensors/all - 全センサーデータ",
-            "GET  /sensors/status - センサー状態"
+            "GET  /sensors/status - センサー状態",
+            "GET  /acoustic/devices - オーディオデバイス一覧",
+            "POST /acoustic/start - 音響キャプチャ開始",
+            "POST /acoustic/stop - 音響キャプチャ停止",
+            "GET  /acoustic/status - キャプチャ状態",
+            "GET  /acoustic/features - 音響特徴量取得",
+            "GET  /acoustic/state - 音響状態推定",
+            "POST /acoustic/record/start - 録音セッション開始",
+            "POST /acoustic/record/stop - 録音セッション停止",
+            "POST /acoustic/record/frame - フレーム記録",
+            "GET  /acoustic/record/data - 録音データ取得",
+            "GET  /acoustic/scenarios - シナリオ一覧",
+            "POST /acoustic/scenario/start - シナリオ実行開始",
+            "POST /acoustic/scenario/stop - シナリオ中断",
+            "GET  /acoustic/scenario/status - シナリオ実行状態",
+            "GET  /acoustic/scenario/result - シナリオ実行結果"
         ]
     }
 
