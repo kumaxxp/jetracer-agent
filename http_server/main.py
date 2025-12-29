@@ -57,6 +57,27 @@ try:
 except Exception as e:
     print(f"[Server] Failed to initialize acoustic classifier: {e}")
 
+# === 音響スロットルコントローラー初期化 ===
+from .core.acoustic_throttle_controller import init_acoustic_throttle_controller, ControllerConfig
+
+try:
+    # Phase 2-B で特定したパラメータ
+    _throttle_config = ControllerConfig(
+        startup_pwm=0.147,
+        maintain_pwm=0.067,
+        threshold_pwm=0.117,
+    )
+
+    _throttle_controller = init_acoustic_throttle_controller(
+        set_throttle=_set_throttle,
+        config=_throttle_config
+    )
+    print(f"[Server] Acoustic throttle controller initialized: "
+          f"startup={_throttle_config.startup_pwm:.3f}, "
+          f"maintain={_throttle_config.maintain_pwm:.3f}")
+except Exception as e:
+    print(f"[Server] Failed to initialize acoustic throttle controller: {e}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -296,7 +317,11 @@ def root():
             "GET  /acoustic/scenario/result - シナリオ実行結果",
             "GET  /acoustic/state/predict - 音響状態を推論",
             "GET  /acoustic/state/continuous - 継続的な状態監視",
-            "GET  /acoustic/classifier/status - 分類器の状態"
+            "GET  /acoustic/classifier/status - 分類器の状態",
+            "POST /acoustic/throttle/start - ヒステリシス制御開始",
+            "POST /acoustic/throttle/stop - ヒステリシス制御停止",
+            "GET  /acoustic/throttle/status - ヒステリシス制御状態",
+            "POST /acoustic/throttle/config - 制御パラメータ更新"
         ]
     }
 

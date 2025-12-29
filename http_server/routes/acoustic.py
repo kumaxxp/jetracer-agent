@@ -398,3 +398,105 @@ async def get_classifier_status():
         "model_path": str(classifier.model_path),
         "labels": classifier.label_names if classifier.is_loaded else []
     }
+
+
+# === ヒステリシス制御エンドポイント ===
+
+from ..core.acoustic_throttle_controller import (
+    get_acoustic_throttle_controller,
+    get_control_loop,
+    ControllerConfig
+)
+
+
+class ThrottleStartRequest(BaseModel):
+    target_speed: float = 0.2
+
+
+@router.post("/throttle/start")
+async def start_acoustic_throttle(request: ThrottleStartRequest):
+    """音響フィードバック制御で走行開始"""
+    controller = get_acoustic_throttle_controller()
+    if controller is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Acoustic throttle controller not initialized"
+        )
+
+    # 音響キャプチャが動作中か確認
+    manager = AcousticManager.get_instance()
+    if not manager.is_capturing():
+        raise HTTPException(
+            status_code=400,
+            detail="Audio capture not running. Call /acoustic/capture/start first"
+        )
+
+    # 制御ループ開始
+    control_loop = get_control_loop()
+    if control_loop:
+        import asyncio
+        asyncio.create_task(control_loop.start())
+
+    controller.start(target_speed=request.target_speed)
+    return {
+        "status": "started",
+        "target_speed": request.target_speed,
+        "startup_pwm": controller.config.startup_pwm
+    }
+
+
+@router.post("/throttle/stop")
+async def stop_acoustic_throttle():
+    """音響フィードバック制御を停止"""
+    controller = get_acoustic_throttle_controller()
+    if controller is None:
+        raise HTTPException(status_code=503, detail="Controller not initialized")
+
+    # 制御ループ停止
+    control_loop = get_control_loop()
+    if control_loop:
+        import asyncio
+        asyncio.create_task(control_loop.stop())
+
+    controller.stop()
+    return {"status": "stopped"}
+
+
+@router.get("/throttle/status")
+async def get_throttle_status():
+    """制御状態を取得"""
+    controller = get_acoustic_throttle_controller()
+    if controller is None:
+        return {"initialized": False}
+
+    status = controller.get_status()
+    status["initialized"] = True
+    return status
+
+
+@router.post("/throttle/config")
+async def update_throttle_config(
+    startup_pwm: float = None,
+    maintain_pwm: float = None,
+    threshold_pwm: float = None
+):
+    """制御パラメータを更新"""
+    controller = get_acoustic_throttle_controller()
+    if controller is None:
+        raise HTTPException(status_code=503, detail="Controller not initialized")
+
+    if startup_pwm is not None:
+        controller.config.startup_pwm = startup_pwm
+    if maintain_pwm is not None:
+        controller.config.maintain_pwm = maintain_pwm
+    if threshold_pwm is not None:
+        controller.config.threshold_pwm = threshold_pwm
+
+    return {
+        "status": "updated",
+        "config": {
+            "startup_pwm": controller.config.startup_pwm,
+            "maintain_pwm": controller.config.maintain_pwm,
+            "threshold_pwm": controller.config.threshold_pwm,
+        }
+    }
