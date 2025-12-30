@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous, acoustic
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous, acoustic, fusion
 from .core.camera_manager import camera_manager
 from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
@@ -251,6 +251,7 @@ app.include_router(sensors.router, tags=["sensors"])
 app.include_router(pwm.router, tags=["pwm"])
 app.include_router(autonomous.router, tags=["autonomous"])
 app.include_router(acoustic.router, tags=["acoustic"])
+app.include_router(fusion.router, tags=["fusion"])
 
 
 @app.get("/")
@@ -322,7 +323,14 @@ def root():
             "POST /acoustic/throttle/start - ヒステリシス制御開始",
             "POST /acoustic/throttle/stop - ヒステリシス制御停止",
             "GET  /acoustic/throttle/status - ヒステリシス制御状態",
-            "POST /acoustic/throttle/config - 制御パラメータ更新"
+            "POST /acoustic/throttle/config - 制御パラメータ更新",
+            "GET  /fusion/motion_state - 総合モーション状態",
+            "GET  /fusion/stuck - スタック検出状態",
+            "GET  /fusion/lifted - 持ち上げ検出状態",
+            "GET  /fusion/collision - 衝突検知状態",
+            "GET  /fusion/imu_drift - IMUドリフト検出状態",
+            "GET  /fusion/config - フュージョン設定取得",
+            "POST /fusion/config - フュージョン設定更新"
         ]
     }
 
