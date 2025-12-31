@@ -81,6 +81,7 @@ class ControlResponse(BaseModel):
     intent: Dict
     controller_state: Dict
     safety_override: Optional[Dict] = None
+    sensor_state: Optional[Dict] = None
 
 
 # --- エンドポイント ---
@@ -187,7 +188,8 @@ async def control(sensor_input: SensorInput):
             "reason": override.reason,
             "throttle_override": override.throttle_override,
             "steering_override": override.steering_override,
-        } if override else None
+        } if override else None,
+        sensor_state=sensor_state.to_dict()
     )
 
 
