@@ -19,7 +19,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous, acoustic, fusion, nanosam
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous, acoustic, fusion, reflex
+# nanosam を無効化（FunctionGemma CUDA優先）
+# from .routes import nanosam
 from .core.camera_manager import camera_manager
 from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
@@ -112,6 +114,25 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[Server] Warning: Sensor probe failed: {e}")
     
+    # FunctionGemmaを初期化（CPU専用モード - PyTorchとのCUDA競合回避）
+    # reflex.pyのset_engine()を使用してグローバルインスタンスを設定
+    print("[Server] Pre-loading FunctionGemma (CPU mode)...")
+    try:
+        from .routes.reflex import set_engine
+        from .core.reflex.functiongemma_engine import FunctionGemmaEngine
+
+        # エンジンを作成・初期化してreflex.pyに設定
+        _functiongemma = FunctionGemmaEngine()
+        if _functiongemma.initialize():
+            print(f"[Server] FunctionGemma loaded (CPU), inference: {_functiongemma.last_inference_time:.1f}ms")
+        else:
+            print("[Server] FunctionGemma running in fallback mode (rule-based)")
+        set_engine(_functiongemma)
+    except Exception as e:
+        print(f"[Server] FunctionGemma initialization failed: {e}")
+        import traceback
+        traceback.print_exc()
+
     # 重要: 両方のモデルを先にロード（CUDAストリーム競合防止）
     print("[Server] Pre-loading models to avoid CUDA stream conflicts...")
     try:
@@ -252,7 +273,8 @@ app.include_router(pwm.router, tags=["pwm"])
 app.include_router(autonomous.router, tags=["autonomous"])
 app.include_router(acoustic.router, tags=["acoustic"])
 app.include_router(fusion.router, tags=["fusion"])
-app.include_router(nanosam.router, tags=["nanosam"])
+# app.include_router(nanosam.router, tags=["nanosam"])  # FunctionGemma CUDA優先のため無効化
+app.include_router(reflex.router, tags=["reflex"])
 
 
 @app.get("/")
@@ -339,7 +361,14 @@ def root():
             "GET  /nanosam/road_mask - 走行可能領域マスク取得",
             "GET  /nanosam/steering - ステアリング推奨値取得",
             "POST /nanosam/segment_and_steer - セグメント＋ステアリング一括",
-            "GET  /nanosam/benchmark - NanoSAMベンチマーク"
+            "GET  /nanosam/benchmark - NanoSAMベンチマーク",
+            "GET  /reflex/status - FunctionGemma状態取得",
+            "POST /reflex/initialize - FunctionGemmaエンジン初期化",
+            "POST /reflex/infer - センサー→意図推論",
+            "POST /reflex/control - センサー→PWM制御（フルパイプライン）",
+            "POST /reflex/emergency_stop - 緊急停止",
+            "POST /reflex/reset - 状態リセット",
+            "GET  /reflex/architecture - アーキテクチャ情報"
         ]
     }
 
