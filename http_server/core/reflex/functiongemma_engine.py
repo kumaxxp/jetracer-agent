@@ -1,13 +1,14 @@
-"""FunctionGemma推論エンジン
+"""FunctionGemma推論エンジン（HTTP クライアント版）
 
-270Mパラメータの軽量LLMでセンサー状態から制御意図を生成。
+llama-server（別プロセス）にHTTP経由で推論リクエストを送信。
+PyTorchとのCUDA競合を完全に回避。
 """
 
 import json
 import time
 import re
-from pathlib import Path
 from typing import Optional, Dict, Any
+import httpx
 
 from .intent_vocabulary import (
     ControlIntent, SpeedIntent, SpeedChangeIntent,
@@ -16,128 +17,104 @@ from .intent_vocabulary import (
 from .sensor_preprocessor import AbstractSensorState
 
 
-# FunctionGemmaモデルパス
-MODEL_PATH = Path.home() / "models" / "functiongemma-2b-it-q4_k_m.gguf"
+# llama-server 設定
+LLAMA_SERVER_URL = "http://127.0.0.1:8081"
+COMPLETION_ENDPOINT = f"{LLAMA_SERVER_URL}/completion"
+HEALTH_ENDPOINT = f"{LLAMA_SERVER_URL}/health"
 
 
-# システムプロンプト
-SYSTEM_PROMPT = """あなたはJetRacer自律走行車の反射神経AIです。
-センサー入力を受け取り、意図レベルの制御指示をJSON形式で出力してください。
+# システムプロンプト（Few-shot例付き）
+SYSTEM_PROMPT = """JetRacer制御AI。センサー状態からJSON制御指示を出力。
 
-## 重要な制約
-- 数値での速度・角度指定は禁止です
-- 必ず意図語彙（メタ言語）で出力してください
-- JSONのみを出力し、説明文は不要です
+## 語彙
+speed: stop/creep/slow/normal/fast
+speed_change: emergency_stop/decelerate/halve/accelerate/maintain
+steering: straight/slight_left/left/hard_left/slight_right/right/hard_right
+urgency: low/normal/high/critical
 
-## 意図語彙
+## センサー値
+lidar: clear(安全)/warning(注意)/danger(危険)/contact(接触)
+imu.lifted: 持ち上げられている
+imu.impact: 衝突
+grip: good/slipping/lost
+road.position: center/left_edge/right_edge/lost
 
-【speed】stop, creep, slow, normal, fast
-【speed_change】decelerate, accelerate, halve, emergency_stop, maintain
-【steering】straight, slight_left, left, hard_left, slight_right, right, hard_right, more_left, more_right, center
-【direction】forward, reverse, hold
-【urgency】low, normal, high, critical
+## 例
 
-## センサー状態の読み方
+入力: lidar.front=clear, lidar.left=clear, lidar.right=clear
+出力: {"speed": "normal", "steering": "straight", "reason": "all_clear"}
 
-【lidar】front/left/right の値
-- clear: 安全（1m以上）
-- warning: 注意（0.3-1m）
-- danger: 危険（0.3m未満）
-- contact: 接触
+入力: lidar.front=danger
+出力: {"speed_change": "emergency_stop", "urgency": "critical", "reason": "front_danger"}
 
-【imu】
-- impact: true なら衝突発生
-- lifted: true なら持ち上げられている
+入力: lidar.front=contact
+出力: {"speed_change": "emergency_stop", "urgency": "critical", "reason": "front_contact"}
 
-【audio】
-- motor: stopped/running/spinning
-- grip: good/slipping/lost
+入力: imu.lifted=true
+出力: {"speed_change": "emergency_stop", "escalate": true, "reason": "lifted"}
 
-【road】
-- visible: 道路が見えているか
-- position: center/left_edge/right_edge/lost
+入力: imu.impact=true
+出力: {"speed_change": "emergency_stop", "urgency": "critical", "reason": "impact"}
 
-## 出力形式（JSON）
+入力: grip=lost
+出力: {"speed_change": "halve", "reason": "grip_lost"}
 
-```json
-{
-  "speed": "slow",
-  "steering": "straight",
-  "reason": "前方クリア、道路中央"
-}
-```
+入力: road.position=left_edge
+出力: {"steering": "slight_right", "reason": "road_left_edge"}
 
-## 動作シナリオ
+入力: road.position=right_edge
+出力: {"steering": "slight_left", "reason": "road_right_edge"}
 
-1. 前方danger/contact → emergency_stop
-2. grip=lost → halve して様子見
-3. road.position=left_edge → slight_right
-4. 前方warning → decelerate + 空いている方向へ
-5. lifted=true → stop してエスカレート
-"""
+入力: lidar.front=warning, lidar.left=clear
+出力: {"speed_change": "decelerate", "steering": "slight_left", "reason": "front_warning"}
+
+JSONのみ出力。説明不要。"""
 
 
 class FunctionGemmaEngine:
-    """FunctionGemma推論エンジン
+    """FunctionGemma推論エンジン（HTTPクライアント版）
 
-    llama-cpp-python を使用してローカル推論を実行。
+    llama-server（別プロセス）にHTTP経由でリクエストを送信。
     """
 
-    def __init__(self, model_path: Optional[str] = None):
-        self.model_path = Path(model_path) if model_path else MODEL_PATH
-        self.llm = None
+    def __init__(self, server_url: str = LLAMA_SERVER_URL):
+        self.server_url = server_url
+        self.completion_endpoint = f"{server_url}/completion"
+        self.health_endpoint = f"{server_url}/health"
         self._initialized = False
+        self._server_available = False
         self._last_inference_time = 0.0
+        self._http_client: Optional[httpx.Client] = None
 
     def initialize(self) -> bool:
-        """モデル初期化"""
+        """サーバー接続確認"""
         if self._initialized:
             return True
 
-        if not self.model_path.exists():
-            print(f"[FunctionGemma] Model not found: {self.model_path}")
-            print("[FunctionGemma] Running in fallback mode (rule-based)")
+        try:
+            self._http_client = httpx.Client(timeout=30.0)
+
+            # ヘルスチェック
+            response = self._http_client.get(self.health_endpoint)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("status") == "ok":
+                    self._server_available = True
+                    self._initialized = True
+                    print(f"[FunctionGemma] Connected to llama-server at {self.server_url}")
+                    return True
+
+            print(f"[FunctionGemma] Server not ready: {response.text}")
             return False
 
-        try:
-            from llama_cpp import Llama
-
-            print(f"[FunctionGemma] Loading model: {self.model_path.name}")
-            start = time.time()
-
-            # CPU専用モード（PyTorchとのCUDA競合を回避）
-            # 270Mモデルは軽量なのでCPUでも400-500msで推論可能
-            self.llm = Llama(
-                model_path=str(self.model_path),
-                n_gpu_layers=0,   # CPU専用
-                n_ctx=2048,       # コンテキスト長
-                n_batch=256,
-                verbose=False
-            )
-
-            load_time = time.time() - start
-            print(f"[FunctionGemma] Model loaded ({load_time:.1f}s)")
-
-            # ウォームアップ
-            self._warmup()
-
-            self._initialized = True
-            return True
-
-        except ImportError:
-            print("[FunctionGemma] llama-cpp-python not installed")
+        except httpx.ConnectError:
+            print(f"[FunctionGemma] Cannot connect to {self.server_url}")
+            print("[FunctionGemma] Please start llama-server first:")
+            print("  llama-server --model ~/models/functiongemma-2b-it-q4_k_m.gguf --port 8081 --n-gpu-layers 99")
             return False
         except Exception as e:
             print(f"[FunctionGemma] Initialization failed: {e}")
             return False
-
-    def _warmup(self, iterations: int = 2):
-        """ウォームアップ"""
-        print(f"[FunctionGemma] Warming up...")
-        dummy_state = AbstractSensorState()
-        for _ in range(iterations):
-            self._infer_llm(dummy_state)
-        print("[FunctionGemma] Warmup complete")
 
     def infer(self, sensor_state: AbstractSensorState) -> ControlIntent:
         """センサー状態から制御意図を推論
@@ -150,9 +127,8 @@ class FunctionGemmaEngine:
         """
         start = time.time()
 
-        # LLMが利用可能ならLLM推論
-        if self._initialized and self.llm:
-            intent = self._infer_llm(sensor_state)
+        if self._server_available and self._http_client:
+            intent = self._infer_http(sensor_state)
         else:
             # フォールバック: ルールベース
             intent = self._infer_rule_based(sensor_state)
@@ -160,29 +136,94 @@ class FunctionGemmaEngine:
         self._last_inference_time = (time.time() - start) * 1000
         return intent
 
-    def _infer_llm(self, sensor_state: AbstractSensorState) -> ControlIntent:
-        """LLMで推論"""
-        prompt = f"""センサー状態:
-{sensor_state.to_prompt_text()}
+    def _infer_http(self, sensor_state: AbstractSensorState) -> ControlIntent:
+        """HTTP経由でllama-serverに推論リクエスト"""
+        # センサー状態を簡潔な形式に変換
+        sensor_summary = sensor_state.to_compact_text()
 
-上記の状態に対する制御意図をJSONで出力してください。"""
+        # Gemma 2 チャットフォーマット（Few-shot例と同形式）
+        user_content = f"""{SYSTEM_PROMPT}
+
+入力: {sensor_summary}
+出力:"""
+
+        prompt = f"<start_of_turn>user\n{user_content}<end_of_turn>\n<start_of_turn>model\n"
 
         try:
-            response = self.llm.create_chat_completion(
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt}
-                ],
-                max_tokens=128,
-                temperature=0.1,  # 低温で決定的に
+            response = self._http_client.post(
+                self.completion_endpoint,
+                json={
+                    "prompt": prompt,
+                    "n_predict": 128,
+                    "temperature": 0.1,
+                    "top_k": 40,
+                    "top_p": 0.9,
+                    "stop": ["<end_of_turn>", "\n\n"],
+                }
             )
 
-            content = response["choices"][0]["message"]["content"]
-            return self._parse_response(content)
+            if response.status_code == 200:
+                data = response.json()
+                content = data.get("content", "")
+                intent = self._parse_response(content)
+
+                # 安全性検証：危険な状態でLLMが適切に応答しなかった場合はルールベースを使用
+                if self._needs_safety_override(sensor_state, intent):
+                    print(f"[FunctionGemma] Safety override: LLM output invalid for critical state")
+                    return self._infer_rule_based(sensor_state)
+
+                return intent
+            else:
+                print(f"[FunctionGemma] HTTP error: {response.status_code}")
+                return self._infer_rule_based(sensor_state)
 
         except Exception as e:
             print(f"[FunctionGemma] Inference error: {e}")
             return self._infer_rule_based(sensor_state)
+
+    def _needs_safety_override(self, state: AbstractSensorState, intent: ControlIntent) -> bool:
+        """LLM出力が安全要件を満たしているかチェック"""
+        from .sensor_preprocessor import ProximityLevel, GripStatus, RoadPosition
+
+        # === Critical Safety (必須) ===
+
+        # 前方danger/contactの場合、emergency_stopが必須
+        if state.lidar_front in (ProximityLevel.DANGER, ProximityLevel.CONTACT):
+            if intent.speed_change != SpeedChangeIntent.EMERGENCY_STOP:
+                return True
+
+        # 持ち上げられた場合、emergency_stop + escalateが必須
+        if state.is_lifted:
+            if intent.speed_change != SpeedChangeIntent.EMERGENCY_STOP or not intent.escalate:
+                return True
+
+        # 衝突検知の場合、emergency_stopが必須
+        if state.impact_detected:
+            if intent.speed_change != SpeedChangeIntent.EMERGENCY_STOP:
+                return True
+
+        # === Important Safety (推奨) ===
+
+        # 前方warningの場合、減速が必要
+        if state.lidar_front == ProximityLevel.WARNING:
+            if intent.speed_change not in (SpeedChangeIntent.DECELERATE, SpeedChangeIntent.HALVE, SpeedChangeIntent.EMERGENCY_STOP):
+                return True
+
+        # グリップ喪失時はhalveが必要
+        if state.grip_status == GripStatus.LOST:
+            if intent.speed_change not in (SpeedChangeIntent.HALVE, SpeedChangeIntent.EMERGENCY_STOP):
+                return True
+
+        # 道路端ではステアリング修正が必要
+        if state.road_position == RoadPosition.LEFT_EDGE:
+            if intent.steering not in (SteeringIntent.SLIGHT_RIGHT, SteeringIntent.RIGHT, SteeringIntent.HARD_RIGHT):
+                return True
+
+        if state.road_position == RoadPosition.RIGHT_EDGE:
+            if intent.steering not in (SteeringIntent.SLIGHT_LEFT, SteeringIntent.LEFT, SteeringIntent.HARD_LEFT):
+                return True
+
+        return False
 
     def _parse_response(self, content: str) -> ControlIntent:
         """LLM出力をパース"""
@@ -222,7 +263,7 @@ class FunctionGemmaEngine:
 
             if "urgency" in data:
                 try:
-                    intent.urgency = UrgencyLevel(data["urgency"])
+                    intent.urgency = UrgencyLevel(data.get("urgency", "normal"))
                 except ValueError:
                     pass
 
@@ -270,7 +311,6 @@ class FunctionGemmaEngine:
 
         if state.lidar_front == ProximityLevel.WARNING:
             intent.speed_change = SpeedChangeIntent.DECELERATE
-            # 空いている方向へ
             if state.lidar_left == ProximityLevel.CLEAR:
                 intent.steering = SteeringIntent.SLIGHT_LEFT
             elif state.lidar_right == ProximityLevel.CLEAR:
@@ -305,9 +345,10 @@ class FunctionGemmaEngine:
         """ステータス取得"""
         return {
             "initialized": self._initialized,
-            "model_path": str(self.model_path),
-            "model_exists": self.model_path.exists(),
-            "last_inference_ms": self._last_inference_time,
+            "server_url": self.server_url,
+            "server_available": self._server_available,
+            "last_inference_ms": round(self._last_inference_time, 2),
+            "mode": "http" if self._server_available else "rule_based_fallback",
         }
 
     @property
@@ -317,3 +358,9 @@ class FunctionGemmaEngine:
     @property
     def last_inference_time(self) -> float:
         return self._last_inference_time
+
+    def close(self):
+        """クリーンアップ"""
+        if self._http_client:
+            self._http_client.close()
+            self._http_client = None

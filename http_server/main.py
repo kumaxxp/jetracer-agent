@@ -114,19 +114,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         print(f"[Server] Warning: Sensor probe failed: {e}")
     
-    # FunctionGemmaを初期化（CPU専用モード - PyTorchとのCUDA競合回避）
-    # reflex.pyのset_engine()を使用してグローバルインスタンスを設定
-    print("[Server] Pre-loading FunctionGemma (CPU mode)...")
+    # FunctionGemmaを初期化（HTTPクライアント版 - llama-serverへ接続）
+    # llama-serverが起動していれば接続、なければルールベースフォールバック
+    print("[Server] Checking llama-server connection for FunctionGemma...")
     try:
         from .routes.reflex import set_engine
         from .core.reflex.functiongemma_engine import FunctionGemmaEngine
 
-        # エンジンを作成・初期化してreflex.pyに設定
         _functiongemma = FunctionGemmaEngine()
         if _functiongemma.initialize():
-            print(f"[Server] FunctionGemma loaded (CPU), inference: {_functiongemma.last_inference_time:.1f}ms")
+            print(f"[Server] FunctionGemma connected to llama-server (HTTP mode)")
         else:
-            print("[Server] FunctionGemma running in fallback mode (rule-based)")
+            print("[Server] llama-server not available, FunctionGemma using rule-based fallback")
+            print("[Server] Start llama-server with: scripts/start_with_llm.sh")
         set_engine(_functiongemma)
     except Exception as e:
         print(f"[Server] FunctionGemma initialization failed: {e}")

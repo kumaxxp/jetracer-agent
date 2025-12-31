@@ -73,6 +73,33 @@ class AbstractSensorState:
         ]
         return "\n".join(lines)
 
+    def to_compact_text(self) -> str:
+        """Few-shot例と同じ簡潔な形式に変換"""
+        parts = []
+
+        # LiDAR - 常に出力
+        parts.append(f"lidar.front={self.lidar_front.value}")
+        if self.lidar_left != ProximityLevel.CLEAR:
+            parts.append(f"lidar.left={self.lidar_left.value}")
+        if self.lidar_right != ProximityLevel.CLEAR:
+            parts.append(f"lidar.right={self.lidar_right.value}")
+
+        # IMU - 異常時のみ
+        if self.is_lifted:
+            parts.append("imu.lifted=true")
+        if self.impact_detected:
+            parts.append("imu.impact=true")
+
+        # Grip - 異常時のみ
+        if self.grip_status != GripStatus.GOOD:
+            parts.append(f"grip={self.grip_status.value}")
+
+        # Road - 異常時のみ
+        if self.road_position != RoadPosition.CENTER:
+            parts.append(f"road.position={self.road_position.value}")
+
+        return ", ".join(parts)
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "lidar": {
