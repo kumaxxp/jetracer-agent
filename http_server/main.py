@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import uvicorn
 
-from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous, acoustic, fusion
+from .routes import status, camera, analysis, control, stream, oneformer, road_mapping, calibration, navigation, distance_grid, dataset, training, benchmark, sensors, pwm, autonomous, acoustic, fusion, nanosam
 from .core.camera_manager import camera_manager
 from .core.sensor_capabilities import sensor_capabilities
 from .core.distance_grid import distance_grid_manager
@@ -252,6 +252,7 @@ app.include_router(pwm.router, tags=["pwm"])
 app.include_router(autonomous.router, tags=["autonomous"])
 app.include_router(acoustic.router, tags=["acoustic"])
 app.include_router(fusion.router, tags=["fusion"])
+app.include_router(nanosam.router, tags=["nanosam"])
 
 
 @app.get("/")
@@ -330,7 +331,15 @@ def root():
             "GET  /fusion/collision - 衝突検知状態",
             "GET  /fusion/imu_drift - IMUドリフト検出状態",
             "GET  /fusion/config - フュージョン設定取得",
-            "POST /fusion/config - フュージョン設定更新"
+            "POST /fusion/config - フュージョン設定更新",
+            "POST /nanosam/init - NanoSAMモデル初期化",
+            "GET  /nanosam/status - NanoSAM状態取得",
+            "POST /nanosam/segment - 画像セグメンテーション",
+            "GET  /nanosam/segment/camera - カメラ画像セグメンテーション",
+            "GET  /nanosam/road_mask - 走行可能領域マスク取得",
+            "GET  /nanosam/steering - ステアリング推奨値取得",
+            "POST /nanosam/segment_and_steer - セグメント＋ステアリング一括",
+            "GET  /nanosam/benchmark - NanoSAMベンチマーク"
         ]
     }
 
