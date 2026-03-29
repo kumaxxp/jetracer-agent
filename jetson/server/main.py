@@ -22,6 +22,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from jetson.server.config import config
+from jetson.server.core.lidar_manager import LidarManager
 from jetson.server.ws.sensor_stream import SensorStreamServer
 from jetson.server.ws.command_receiver import CommandReceiver
 
@@ -34,6 +35,9 @@ from http_server.routes import status, camera, control, stream, calibration
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 logger = logging.getLogger(__name__)
+
+# Hardware components
+lidar_manager = LidarManager(port=config.lidar_port, baudrate=config.lidar_baudrate)
 
 # WebSocket components
 sensor_stream = SensorStreamServer(config)
@@ -65,9 +69,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Failed to load calibration: {e}")
 
+    # Start LiDAR
+    if lidar_manager.start():
+        logger.info(f"LiDAR started on {config.lidar_port}")
+    else:
+        logger.warning("LiDAR failed to start - continuing without LiDAR")
+
     # Wire up WebSocket components
     sensor_stream.set_camera_manager(camera_manager)
     sensor_stream.set_vehicle_controller(vehicle_controller)
+    sensor_stream.set_lidar_manager(lidar_manager)
     command_receiver.set_vehicle_controller(vehicle_controller)
 
     # Start sensor streaming in background
@@ -79,6 +90,7 @@ async def lifespan(app: FastAPI):
     logger.info("Shutting down Jetson Server...")
     await sensor_stream.stop_streaming()
     streaming_task.cancel()
+    lidar_manager.stop()
     camera_manager.stop()
     vehicle_controller.stop()
 
