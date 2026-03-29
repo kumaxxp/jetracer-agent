@@ -1,0 +1,27 @@
+# Jetson connection
+jetson:
+  host: "jetson"
+  http_port: 8000
+  ws_port: 8765
+
+# Perception pipeline
+perception:
+  segmentation_model: "oneformer"
+  segmentation_fps: 5
+  lidar_fusion: true
+  obstacle_map_resolution_m: 0.05
+  obstacle_map_size_m: 5.0
+
+# Control loop
+control:
+  loop_hz: 10
+  reactive_enabled: true
+  llm_enabled: false  # Enable in Phase 5
+  max_steering: 1.0
+  max_throttle: 0.3
+  emergency_stop_distance_m: 0.3
+
+# Safety
+safety:
+  heartbeat_interval_s: 1.0
+  connection_timeout_s: 3.0
