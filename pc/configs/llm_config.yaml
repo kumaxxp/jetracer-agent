@@ -1,0 +1,17 @@
+# PC-side LLM configuration
+llm:
+  backend: "ollama"
+  model: "qwen2.5:7b"
+  ollama_url: "http://localhost:11434/api/generate"
+  temperature: 0.1
+  max_tokens: 512
+  context_length: 4096
+
+  # Vision model for scene description
+  vision_model: "llava:7b"
+
+# Agent behavior
+agent:
+  decision_interval_s: 0.5
+  use_function_calling: true
+  system_prompt_path: "pc/configs/system_prompt.txt"
